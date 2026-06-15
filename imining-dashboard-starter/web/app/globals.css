@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── iMining CI ──────────────────────────────────────────────────────────────
+   Official brand: Navy #002841, Orange #f5911e (+ #ffb964 / #ffdca0).
+   iMining drives the dashboard theme so customer spin-offs are trivial — the
+   customer (Orica) appears only as a logo, not in the palette. RGB triplets so
+   Tailwind's <alpha-value> works. */
+:root {
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+
+  --bg: 244 247 249;        /* app background */
+  --surface: 255 255 255;   /* cards */
+  --border: 224 230 235;
+  --fg: 0 40 65;            /* iMining navy — primary text/headings */
+  --muted: 100 116 130;     /* secondary text */
+
+  --brand: 0 40 65;         /* iMining navy #002841 — primary */
+  --accent: 245 145 30;     /* iMining orange #f5911e — accent */
+  --accent-2: 255 185 100;  /* #ffb964 */
+
+  --sidebar: 0 40 65;       /* navy sidebar */
+  --sidebar-fg: 235 240 244;
+
+  --ok: 22 163 74;
+  --warn: 217 119 6;
+  --danger: 220 38 38;
+}
+
+html, body {
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-family: var(--font-sans);
+}
+* { box-sizing: border-box; }
+
+/* thin scrollbars in the app shell */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--border)); border-radius: 6px; }
+
+/* ── Report / print layout (?print=1 and the Puppeteer render service) ──────── */
+.report-root { background: #fff; color: rgb(var(--fg)); }
+.report-page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 0 auto 14px;
+  padding: 14mm 14mm 16mm;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+  break-after: page;
+  display: flex;
+  flex-direction: column;
+}
+.report-page:last-child { break-after: auto; }
+/* Option A header: iMining navy band + orange pill, orange accent rule, then a
+   white title row with the Orica logo (matches the branded email). */
+.report-head { margin-bottom: 16px; }
+.report-band {
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgb(var(--brand)); padding: 12px 18px; border-radius: 8px 8px 0 0;
+}
+.report-band-logo { height: 40px; width: auto; display: block; }
+.report-rule { height: 4px; background: rgb(var(--accent)); }
+.report-titlerow {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 4px 0;
+}
+.report-meta { text-align: left; }
+.report-kind {
+  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: #fff; background: rgb(var(--accent));
+  padding: 4px 12px; border-radius: 999px;
+}
+.report-title { font-size: 17px; font-weight: 700; color: rgb(var(--brand)); }
+.report-sub { font-size: 11px; color: rgb(var(--muted)); margin-top: 2px; }
+.report-by { font-size: 9px; color: rgb(var(--muted)); margin-top: 3px; }
+.report-orica { height: 63px; width: auto; display: block; flex-shrink: 0; }
+.report-body { flex: 1; }
+/* keep cards from splitting awkwardly across a page break */
+.report-body .rounded-2xl { break-inside: avoid; }
+
+@media print {
+  html, body { background: #fff !important; }
+  .report-page { box-shadow: none; margin: 0; width: auto; min-height: auto; padding: 0; }
+  @page { size: A4; margin: 14mm; }
+}
+/* also force white when the report renders (covers the headless print emulation) */
+.report-root { background: #fff; min-height: 100vh; }

@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── iMining CI ──────────────────────────────────────────────────────────────
+   Official brand: Navy #002841, Orange #f5911e (+ #ffb964 / #ffdca0).
+   iMining drives the dashboard theme; the customer (Nairn Det Plant) appears as
+   a logo, not in the palette. RGB triplets so Tailwind's <alpha-value> works. */
+:root {
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+
+  --bg: 244 247 249;        /* app background */
+  --surface: 255 255 255;   /* cards */
+  --border: 224 230 235;
+  --fg: 0 40 65;            /* iMining navy — primary text/headings */
+  --muted: 100 116 130;     /* secondary text */
+
+  --brand: 0 40 65;         /* iMining navy #002841 — primary */
+  --accent: 245 145 30;     /* iMining orange #f5911e — accent */
+  --accent-2: 255 185 100;  /* #ffb964 */
+
+  --sidebar: 0 40 65;       /* navy sidebar */
+  --sidebar-fg: 235 240 244;
+
+  --ok: 22 163 74;
+  --warn: 217 119 6;
+  --danger: 220 38 38;
+}
+
+html, body {
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-family: var(--font-sans);
+}
+* { box-sizing: border-box; }
+
+/* thin scrollbars in the app shell */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--border)); border-radius: 6px; }
+
+/* Kitchen-TV mode (?tv=1) bumps base font + hides chrome for 3-metre legibility. */
+.tv-mode { font-size: 18px; }
+.tv-mode .tv-hide { display: none !important; }
