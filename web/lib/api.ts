@@ -27,6 +27,7 @@ export type InventoryItem = {
   type: string;                 // RAW_MATERIAL | FINISHED_GOOD | POOL | NDT_BATCH | …
   current_quantity: number;
   original_quantity: number;
+  critical_level: number | null;  // Original_Critical_Level (set for only some items)
   current_location: string;
   current_sub_location: string;
   status: string;               // Active | Sold | Destroyed | Inactive | Print Error
@@ -41,6 +42,7 @@ export type InventoryItem = {
   machine: string;              // ViperDet | Axxis | …
   manufacturer: string;
   customer: string;
+  po_number: string;
   sale_status: string;
   prod_purpose: string;
   prod_date: string | null;
@@ -75,6 +77,46 @@ export type TransactionResponse = {
   count: number;
   items: Transaction[];
 };
+
+export type User = {
+  name: string;
+  pin: string;
+  auth_level: string;
+  active: string;     // "TRUE" / "FALSE"
+  email: string;
+};
+
+// Daily production targets — sourced from a NEW "Daily_Targets" tab (date,
+// production line, product, specifics, target qty). Absent tab → empty list.
+export type DailyTarget = {
+  date: string;             // YYYY-MM-DD (normalised)
+  production_line: string;  // ViperDet | Axxis
+  product: string;          // MS DUAL | QS | …
+  specifics: string;        // e.g. "25/500 · 15m"
+  quantity: number;
+};
+
+// ── External JotForm-backed log sheets (separate spreadsheets) ───────────────
+// These live in their own shared Google Sheets, fetched by gid in the browser.
+export type Breakdown = {
+  at: string;               // raw timestamp string
+  line: "ViperDet" | "Axxis";
+  duration_min: number;
+  station: string;
+  nature: string;           // Critical / Minor / Recurring Issue / Never Seen Before
+  info: string;
+  personnel: string;
+};
+export type QcCheck = {
+  at: string;
+  type: string;             // Mid Crimp at Station | Production Line Check
+  status: string;           // Pass | Fail | ""
+  mid_mm: number | null;
+  inhole_mm: number | null;
+  outhole_mm: number | null;
+  personnel: string;
+};
+export type Decon = { at: string; line: string; hmx_spill: boolean };
 
 // ── Apps Script transport (JSON) ─────────────────────────────────────────────
 async function getJson<T>(action: string, params: Record<string, string> = {}): Promise<T> {
@@ -139,6 +181,48 @@ const toNum = (v: unknown) => {
 };
 const orNull = (v: string) => (v && v.trim() ? v.trim() : null);
 
+// External log spreadsheets (their own files; fetched by gid, browser-side, in
+// both data modes — they're separate sources with their own link-sharing).
+const EXT = {
+  breakdownViper: { id: "1NpWPun3bcZTnjcxw5fWhcbe3Z5LiAxqhrd77dI4lVbg", gid: "911349347" },
+  breakdownAxxis: { id: "1jFimYAgEhWPg0Yze8YB5CCurGXTmPK9fDarCH5OasRU", gid: "564198776" },
+  qcCrimp:        { id: "1YXtZAyYqxvpKQRITdgqPC7UVpNGM7xcX0MarLq5hjH0", gid: "942289539" },
+  deconViper:     { id: "1j-uKuqCYTTIi9eo36QRVcLTiw-Eo7TwdgQ7-O6HDp0c", gid: "664101187" },
+} as const;
+
+async function gvizByGid(id: string, gid: string): Promise<Record<string, string>[]> {
+  const res = await fetch(`https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`External sheet ${res.status}`);
+  return csvToObjects(await res.text());
+}
+
+function mapBreakdown(r: Record<string, string>, line: "ViperDet" | "Axxis"): Breakdown {
+  return {
+    at: r["Submission Date"] || r["Date & Time"] || "",
+    line,
+    duration_min: toNum(r["Duration of breakdown (min)"]),
+    station: r["Station"] ?? "",
+    nature: r["Nature"] ?? "",
+    info: r["Additional Information (optional)"] ?? "",
+    personnel: r["Authorized Personnel"] || [r["Full Name - First Name"], r["Full Name - Last Name"]].filter(Boolean).join(" "),
+  };
+}
+function mapQc(r: Record<string, string>): QcCheck {
+  return {
+    at: r["Submission Date"] || r["Date & Time"] || "",
+    type: r["Crimp"] ?? "",
+    status: r["Status"] ?? "",
+    mid_mm: r["Mid Crimp (mm)"]?.trim() ? toNum(r["Mid Crimp (mm)"]) : null,
+    inhole_mm: r["Inhole Crimp (mm)"]?.trim() ? toNum(r["Inhole Crimp (mm)"]) : null,
+    outhole_mm: r["Outhole Crimp (mm)"]?.trim() ? toNum(r["Outhole Crimp (mm)"]) : null,
+    personnel: r["Authorized Personnel"] ?? "",
+  };
+}
+function mapDecon(r: Record<string, string>): Decon {
+  const hmx = Object.entries(r).some(([k, v]) => k.includes("HMX powder spill") && String(v).trim() !== "");
+  return { at: r["Submission Date"] || r["Date & Time"] || "", line: "ViperDet", hmx_spill: hmx };
+}
+
 function mapInventoryRow(r: Record<string, string>): InventoryItem {
   return {
     qr: r["QR"] ?? "",
@@ -146,6 +230,7 @@ function mapInventoryRow(r: Record<string, string>): InventoryItem {
     type: r["Type"] || "Unknown",
     current_quantity: toNum(r["Current_Quantity"]),
     original_quantity: toNum(r["Original_Quantity"]),
+    critical_level: r["Original_Critical_Level"]?.trim() ? toNum(r["Original_Critical_Level"]) : null,
     current_location: r["Current_Location"] ?? "",
     current_sub_location: r["Current_Sub_Location"] ?? "",
     status: r["Status"] || "Unknown",
@@ -159,11 +244,34 @@ function mapInventoryRow(r: Record<string, string>): InventoryItem {
     machine: r["Machine"] ?? "",
     manufacturer: r["Manufacturer"] ?? "",
     customer: r["Customer"] ?? "",
+    po_number: r["PO_Number"] ?? "",
     sale_status: r["Sale_Status"] ?? "",
     prod_purpose: r["ProdPurpose"] ?? "",
     prod_date: orNull(r["ProdDate_Formatted"] ?? ""),
     prod_shift: r["ProdShift"] ?? "",
     qc_person: r["QC_Person"] ?? "",
+  };
+}
+
+function mapUserRow(r: Record<string, string>): User {
+  return {
+    name: r["Name"] ?? "",
+    pin: r["PIN"] ?? "",
+    auth_level: r["Auth_Level"] ?? "",
+    active: r["Active"] ?? "",
+    email: r["Email"] ?? "",
+  };
+}
+
+function mapTargetRow(r: Record<string, string>): DailyTarget {
+  const raw = r["Date"] ?? "";
+  const m = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  return {
+    date: m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}` : raw.slice(0, 10),
+    production_line: r["Production_Line"] ?? "",
+    product: r["Product"] ?? "",
+    specifics: r["Specifics"] ?? "",
+    quantity: toNum(r["Target_Quantity"] ?? r["Quantity"]),
   };
 }
 
@@ -199,5 +307,34 @@ export const api = {
       return { generated_at: new Date().toISOString(), count: items.length, items };
     }
     return getJson<TransactionResponse>("transactions");
+  },
+  async users(): Promise<{ items: User[] }> {
+    if (MODE === "gviz") return { items: (await gvizTab("User_Management")).map(mapUserRow).filter((u) => u.name) };
+    return getJson<{ items: User[] }>("users");
+  },
+  // Daily_Targets is a tab the team still needs to create — tolerate its absence.
+  async targets(): Promise<{ items: DailyTarget[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Daily_Targets")).map(mapTargetRow).filter((t) => t.date) };
+      return await getJson<{ items: DailyTarget[] }>("targets");
+    } catch {
+      return { items: [] };
+    }
+  },
+  // External log sheets — fetched directly by gid, graceful per-source.
+  async breakdowns(): Promise<{ items: Breakdown[] }> {
+    const [v, a] = await Promise.all([
+      gvizByGid(EXT.breakdownViper.id, EXT.breakdownViper.gid).then((rs) => rs.map((r) => mapBreakdown(r, "ViperDet"))).catch(() => [] as Breakdown[]),
+      gvizByGid(EXT.breakdownAxxis.id, EXT.breakdownAxxis.gid).then((rs) => rs.map((r) => mapBreakdown(r, "Axxis"))).catch(() => [] as Breakdown[]),
+    ]);
+    return { items: [...v, ...a] };
+  },
+  async qcChecks(): Promise<{ items: QcCheck[] }> {
+    try { return { items: (await gvizByGid(EXT.qcCrimp.id, EXT.qcCrimp.gid)).map(mapQc) }; }
+    catch { return { items: [] }; }
+  },
+  async decon(): Promise<{ items: Decon[] }> {
+    try { return { items: (await gvizByGid(EXT.deconViper.id, EXT.deconViper.gid)).map(mapDecon).filter((d) => d.at) }; }
+    catch { return { items: [] }; }
   },
 };

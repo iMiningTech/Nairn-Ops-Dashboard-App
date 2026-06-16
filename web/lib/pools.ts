@@ -3,6 +3,14 @@
 // identical in both data modes and survives the AWS backend swap.
 
 import type { InventoryItem, Transaction } from "@/lib/api";
+import { dateKey } from "@/lib/utils";
+
+// Inclusive date-range filter on a transaction (by its YYYY-MM-DD day key).
+export type DateRange = { from: string; to: string };
+export const inRange = (t: Transaction, r: DateRange) => {
+  const k = dateKey(t.timestamp);
+  return !!k && k >= r.from && k <= r.to;
+};
 
 // ── Classification ───────────────────────────────────────────────────────────
 // The "POOL" type is overloaded in the sheet:
@@ -36,13 +44,10 @@ export const isIntervention = (t: Transaction) =>
 // ── Pool flows (net in/out over a rolling window) ────────────────────────────
 export type PoolFlow = { qr: string; in_qty: number; out_qty: number; net: number };
 
-export function poolFlows(txns: Transaction[], poolQrs: Set<string>, days: number): Map<string, PoolFlow> {
-  const cutoff = Date.now() - days * 86400000;
+export function poolFlows(txns: Transaction[], poolQrs: Set<string>, range: DateRange): Map<string, PoolFlow> {
   const out = new Map<string, PoolFlow>();
   for (const t of txns) {
-    if (!isQtyTxn(t) || !poolQrs.has(t.qr)) continue;
-    const at = ms(t.timestamp);
-    if (!isNaN(at) && at < cutoff) continue;
+    if (!isQtyTxn(t) || !poolQrs.has(t.qr) || !inRange(t, range)) continue;
     const d = txnDelta(t);
     if (!d) continue;
     const f = out.get(t.qr) || { qr: t.qr, in_qty: 0, out_qty: 0, net: 0 };
@@ -86,14 +91,13 @@ export type RoomRecon = {
   balanced: boolean;
 };
 
-export function reconcilePools(items: InventoryItem[], txns: Transaction[], days: number): PoolRecon[] {
+export function reconcilePools(items: InventoryItem[], txns: Transaction[], range: DateRange): PoolRecon[] {
   const pools = explosivePools(items);
   const poolSet = new Set(pools.map((p) => p.qr));
-  const cutoff = Date.now() - days * 86400000;
 
-  // Latest qty txn per pool (by timestamp) → "calculated" value.
+  // Latest qty txn per pool (by timestamp) → "calculated" value (range-independent).
   const latest = new Map<string, { at: number; newV: number }>();
-  // Windowed flow + interventions per pool.
+  // Flow + interventions per pool, within the selected range.
   const flow = new Map<string, { in: number; out: number; net: number; interventions: number }>();
 
   for (const t of txns) {
@@ -102,7 +106,7 @@ export function reconcilePools(items: InventoryItem[], txns: Transaction[], days
     const prev = latest.get(t.qr);
     if (!isNaN(at) && (!prev || at >= prev.at)) latest.set(t.qr, { at, newV: num(t.new_value) });
 
-    if (!isNaN(at) && at < cutoff) continue;
+    if (!inRange(t, range)) continue;
     const d = txnDelta(t);
     const f = flow.get(t.qr) || { in: 0, out: 0, net: 0, interventions: 0 };
     if (d > 0) f.in += d; else f.out += -d;

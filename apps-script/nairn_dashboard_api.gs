@@ -23,10 +23,13 @@
  * Endpoints (GET ?action=…):
  *   ?action=stockOnHand    → { generated_at, count, items: [InventoryItem] }
  *   ?action=transactions   → { generated_at, count, items: [Transaction] }
+ *   ?action=users          → { items: [User] }   (from User_Management)
+ *   ?action=targets        → { items: [DailyTarget] }  (from Daily_Targets, if present)
  *
- * The dashboard computes pool flows + reconciliation client-side from these two
- * feeds, so that logic is identical in dev (gviz) and prod (Apps Script) and
- * survives the AWS swap. This script just serves the raw-ish shapes.
+ * The dashboard computes production, pool flows, reconciliation and operator
+ * stats client-side from these feeds, so that logic is identical in dev (gviz)
+ * and prod (Apps Script) and survives the AWS swap. This script just serves the
+ * raw-ish shapes.
  */
 
 // Leave blank if this script is BOUND to the spreadsheet (Extensions → Apps
@@ -46,7 +49,9 @@ function doGet(e) {
     switch (params.action) {
       case 'stockOnHand':  return _json(stockOnHand_());
       case 'transactions': return _json(transactions_());
-      default:             return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions'] });
+      case 'users':        return _json(users_());
+      case 'targets':      return _json(targets_());
+      default:             return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -67,6 +72,27 @@ function transactions_() {
   return { generated_at: new Date().toISOString(), count: items.length, items: items };
 }
 
+function users_() {
+  var rows = readTab_('User_Management');
+  var items = rows.map(function (r) {
+    return { name: str_(r['Name']), pin: str_(r['PIN']), auth_level: str_(r['Auth_Level']),
+             active: str_(r['Active']), email: str_(r['Email']) };
+  }).filter(function (u) { return u.name; });
+  return { items: items };
+}
+
+// Daily_Targets is a tab the team still needs to create — return [] if absent.
+function targets_() {
+  var sheet = _ss().getSheetByName('Daily_Targets');
+  if (!sheet) return { items: [] };
+  var rows = readTab_('Daily_Targets');
+  var items = rows.map(function (r) {
+    return { date: iso_(r['Date']), production_line: str_(r['Production_Line']), product: str_(r['Product']),
+             specifics: str_(r['Specifics']), quantity: num_(r['Target_Quantity'] || r['Quantity']) };
+  });
+  return { items: items };
+}
+
 // ── Mapping (sheet headers → contract shape) ─────────────────────────────────
 
 function mapInventory_(r) {
@@ -76,6 +102,7 @@ function mapInventory_(r) {
     type: str_(r['Type']) || 'Unknown',
     current_quantity: num_(r['Current_Quantity']),
     original_quantity: num_(r['Original_Quantity']),
+    critical_level: str_(r['Original_Critical_Level']) ? num_(r['Original_Critical_Level']) : null,
     current_location: str_(r['Current_Location']),
     current_sub_location: str_(r['Current_Sub_Location']),
     status: str_(r['Status']) || 'Unknown',
@@ -89,6 +116,7 @@ function mapInventory_(r) {
     machine: str_(r['Machine']),
     manufacturer: str_(r['Manufacturer']),
     customer: str_(r['Customer']),
+    po_number: str_(r['PO_Number']),
     sale_status: str_(r['Sale_Status']),
     prod_purpose: str_(r['ProdPurpose']),
     prod_date: iso_(r['ProdDate_Formatted']),
@@ -99,7 +127,9 @@ function mapInventory_(r) {
 
 function mapTransaction_(r) {
   return {
-    timestamp: iso_(r['Timestamp']),
+    // Naive plant-local wall-clock (matches the gviz CSV exactly), so the
+    // dashboard's shift-start/deadtime clock math is identical in both modes.
+    timestamp: localTs_(r['Timestamp']),
     qr: str_(r['QR']),
     type: str_(r['Type']),
     field: str_(r['Field']),
@@ -147,6 +177,16 @@ function iso_(v) {
   if (Object.prototype.toString.call(v) === '[object Date]') return isNaN(v.getTime()) ? null : v.toISOString();
   var t = Date.parse(v);
   return isNaN(t) ? null : new Date(t).toISOString();
+}
+
+// Naive plant-local timestamp string "M/d/yyyy H:mm:ss" (preserves wall clock).
+function localTs_(v) {
+  if (v == null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v.getTime())) return '';
+    return Utilities.formatDate(v, _ss().getSpreadsheetTimeZone(), 'M/d/yyyy H:mm:ss');
+  }
+  return String(v);
 }
 
 function _json(obj) {
