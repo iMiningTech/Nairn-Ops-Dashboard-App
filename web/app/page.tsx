@@ -5,7 +5,7 @@ import Image from "next/image";
 import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
   CheckCircle2, Search, Download, Factory, ArrowRightLeft, Target, PackageCheck, Flame, ShieldCheck,
-  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X,
+  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut,
 } from "lucide-react";
 import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
@@ -17,11 +17,11 @@ import {
 } from "@/lib/pools";
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
-  finishedGoodsInMagazines, lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
-  inventoryMatrix, agedFinishedGoods, SITE_ROOMS, PROD_FAMILIES,
-  type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox,
+  lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
+  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, PROD_FAMILIES,
+  type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox, type FinResult,
 } from "@/lib/production";
-import { operatorStats, inactiveRosterUsers, activeOperatorsOn, type OperatorStat } from "@/lib/operators";
+import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary } from "@/lib/sales";
 import { TYPE_COLOURS } from "@/lib/colors";
@@ -37,6 +37,7 @@ const VIEWS = [
   { id: "breakdowns", label: "Breakdowns", icon: WrenchIcon },
   { id: "finished", label: "Finished Goods", icon: Boxes },
   { id: "rawmaterials", label: "Raw Materials", icon: Package },
+  { id: "financial", label: "Financial Lookup", icon: Hash },
   { id: "sales", label: "Sales History", icon: Receipt },
   { id: "stock", label: "Filtered Inventory", icon: Search },
   { id: "recon", label: "Reconciliation", icon: Scale },
@@ -47,8 +48,14 @@ type ViewId = (typeof VIEWS)[number]["id"];
 const FAMILY_COLOURS: Record<string, string> = { "MS DUAL": "#f5911e", QS: "#EDC948", TITANIUM: "#D37295", SILVER: "#4E79A7" };
 const signed = (n: number) => `${n > 0 ? "+" : ""}${n.toLocaleString("en-GB")}`;
 
-// ── Soft access gate ─────────────────────────────────────────────────────────
-function AccessGate({ onUnlock }: { onUnlock: () => void }) {
+// Role-based access. Two passwords (client-side SHA-256 — not hard security):
+//   N@1rn → "all" (every tab) · FG123 → "fg" (Finished Goods tab only).
+type Role = "all" | "fg" | null;
+const HASH_ALL = "2385eabbf6ba7abaf8db924aef2ee048ec64932a18efd9f1597d611e69ed10e3";
+const HASH_FG = "95994036c0699b80bb7907435bc87c37733fbc69853818155051163087c47e19";
+
+// ── Access gate (BME-branded, role-aware) ────────────────────────────────────
+function AccessGate({ onUnlock }: { onUnlock: (role: Exclude<Role, null>) => void }) {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -58,24 +65,25 @@ function AccessGate({ onUnlock }: { onUnlock: () => void }) {
     try {
       const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pw));
       const hex = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-      if (hex === process.env.NEXT_PUBLIC_ACCESS_HASH) {
-        try { localStorage.setItem("nairn_access", "1"); } catch { /* ignore */ }
-        onUnlock();
+      const role: Role = hex === HASH_ALL ? "all" : hex === HASH_FG ? "fg" : null;
+      if (role) {
+        try { localStorage.setItem("nairn_role", role); } catch { /* ignore */ }
+        onUnlock(role);
       } else { setErr(true); setBusy(false); }
     } catch { setErr(true); setBusy(false); }
   }
   return (
-    <div className="flex min-h-screen items-center justify-center bg-sidebar px-4">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-2xl bg-surface p-8 shadow-2xl">
-        <Image src="/imining_blue.png" alt="iMining" width={200} height={48} style={{ height: 40, width: "auto" }} className="mb-6" priority />
-        <div className="text-lg font-semibold text-fg">{CUSTOMER} — Inventory Operations</div>
-        <div className="mb-5 mt-1 text-sm text-muted">Enter the password to continue.</div>
+    <div className="flex min-h-screen items-center justify-center bg-white px-4">
+      <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border-t-8 border-[#E2231A] bg-white p-8 shadow-2xl">
+        <Image src="/bme_logo_v2.png" alt="BME" width={267} height={188} style={{ height: 120, width: "auto" }} className="mx-auto mb-6" priority />
+        <div className="text-center text-lg font-semibold text-[#E2231A]">{CUSTOMER} — Inventory</div>
+        <div className="mb-5 mt-1 text-center text-sm text-muted">Enter your password to continue.</div>
         <input type="password" autoFocus value={pw} onChange={(e) => { setPw(e.target.value); setErr(false); }}
           placeholder="Password"
-          className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent" />
-        {err && <div className="mt-2 text-sm text-danger">Incorrect password.</div>}
+          className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-fg outline-none focus:border-[#E2231A]" />
+        {err && <div className="mt-2 text-sm text-[#E2231A]">Incorrect password.</div>}
         <button type="submit" disabled={busy || !pw}
-          className="mt-4 w-full rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
+          className="mt-4 w-full rounded-lg bg-[#E2231A] px-3 py-2 text-sm font-semibold text-white hover:bg-[#c41e16] disabled:opacity-50">
           {busy ? "Checking…" : "Enter"}
         </button>
         <div className="mt-5 text-center text-xs text-muted">Powered by iMining</div>
@@ -96,7 +104,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewId>("overview");
-  const [authed, setAuthed] = useState(false);
+  const [role, setRole] = useState<Role>(null);
   const [tv, setTv] = useState(false);
   // Permanent date-range filter (applies to Operators, Breakdowns, Pool, Reconciliation).
   const [lo, setLo] = useState<string>(() => dayKeyOffset(-29));
@@ -145,9 +153,15 @@ export default function Dashboard() {
     if (typeof window === "undefined") return;
     const p = new URLSearchParams(window.location.search);
     if (p.has("tv")) setTv(true);
-    if (!process.env.NEXT_PUBLIC_ACCESS_HASH) { setAuthed(true); return; }
-    try { if (localStorage.getItem("nairn_access") === "1") setAuthed(true); } catch { /* ignore */ }
+    try {
+      const r = localStorage.getItem("nairn_role");
+      if (r === "all" || r === "fg") { setRole(r); if (r === "fg") setView("finished"); }
+    } catch { /* ignore */ }
   }, []);
+  function logout() {
+    try { localStorage.removeItem("nairn_role"); } catch { /* ignore */ }
+    setRole(null); setView("overview");
+  }
   useEffect(() => {
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
@@ -156,8 +170,10 @@ export default function Dashboard() {
 
   const lastUpdated = useMemo(() => maxDate(items.map((i) => i.last_updated_at)) || generatedAt, [items, generatedAt]);
   const headerTitle = VIEWS.find((v) => v.id === view)?.label ?? "Overview";
+  // Finished-goods-only role sees just that tab.
+  const navViews = role === "fg" ? VIEWS.filter((v) => v.id === "finished") : VIEWS;
 
-  if (!authed) return <AccessGate onUnlock={() => setAuthed(true)} />;
+  if (!role) return <AccessGate onUnlock={(r) => { setRole(r); if (r === "fg") setView("finished"); }} />;
 
   return (
     <div className={`flex h-screen overflow-hidden ${tv ? "tv-mode" : ""}`}>
@@ -167,13 +183,14 @@ export default function Dashboard() {
             <Image src="/imining_white.png" alt="iMining" width={220} height={52} style={{ height: 46, width: "auto" }} />
           </div>
           <nav className="px-3">
-            {VIEWS.map(({ id, label, icon: Icon }) => (
+            {navViews.map(({ id, label, icon: Icon }) => (
               <button key={id} onClick={() => { if (id === "monthly") { setLo(hi); setPreset("custom"); } setView(id); }}
                 className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm ${view === id ? "bg-accent font-medium text-white" : "text-sidebarfg/80 hover:bg-white/10"}`}>
                 <Icon size={18} /> {label}
               </button>
             ))}
           </nav>
+          {role !== "fg" && (
           <div className="mt-4 border-t border-white/10 px-4 py-4">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-sidebarfg/60">Date range</div>
             <div className="mb-2 grid grid-cols-4 gap-1">
@@ -196,6 +213,7 @@ export default function Dashboard() {
                 : "Applies to Operators, Breakdowns, Pool & Reconciliation. The Overview is always live (today)."}
             </div>
           </div>
+          )}
           <div className="mt-auto px-4 py-4 text-xs text-sidebarfg/50">
             Data: {api.mode === "gviz" ? "Google Sheet (live CSV)" : "Apps Script API"}
           </div>
@@ -215,6 +233,11 @@ export default function Dashboard() {
                 <RefreshCw size={15} className={loading ? "animate-spin" : ""} /> Refresh
               </button>
             )}
+            {!tv && (
+              <button onClick={logout} className="flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-sm hover:bg-bg">
+                <LogOut size={15} /> Log out
+              </button>
+            )}
           </div>
         </header>
 
@@ -230,8 +253,9 @@ export default function Dashboard() {
               {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} month={hi.slice(0, 7)} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
               {view === "breakdowns" && <BreakdownsView breakdowns={breakdowns} range={range} rangeLabel={rangeLabel} />}
-              {view === "finished" && <FinishedGoodsView items={items} />}
+              {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
+              {view === "financial" && <FinancialLookupView items={items} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
@@ -290,36 +314,49 @@ function csvDownload(name: string, cols: Col[], rows: Record<string, unknown>[])
 const fmtQty = (v: unknown) => fmtNum(Number(v) || 0);
 const fmtTs = (v: unknown) => fmtTime(v as string);
 
-// ── Today's production card (ViperDet / Axxis) ───────────────────────────────
-function TodayCard({ rec, accent }: { rec: LineRecord; accent: string }) {
+// ── Today's production card (ViperDet / Axxis) — incl. today's target ────────
+function TodayCard({ rec, target, accent }: { rec: LineRecord; target: number; accent: string }) {
+  const pct = target > 0 ? Math.round((rec.quantity / target) * 100) : null;
+  const met = pct != null && pct >= 100;
   return (
-    <Card className="border-t-4" >
+    <Card className="border-t-4">
       <CardBody>
         <div className="flex items-center gap-2">
           <Factory size={16} style={{ color: accent }} />
           <span className="font-semibold text-fg">Today — {rec.line}</span>
         </div>
         <div className="mt-2 flex items-end justify-between">
-          <div><div className="text-xs text-muted">Quantity</div><div className="text-3xl font-semibold tracking-tight text-fg">{fmtNum(rec.quantity)}</div></div>
+          <div>
+            <div className="text-xs text-muted">Quantity{target > 0 ? <span> / {fmtNum(target)} target</span> : ""}</div>
+            <div className="text-3xl font-semibold tracking-tight text-fg">
+              {fmtNum(rec.quantity)}
+              {pct != null && <span className={`ml-2 text-base font-medium ${met ? "text-ok" : "text-warn"}`}>{pct}%</span>}
+            </div>
+          </div>
           <div className="text-right text-sm">
             <div className="text-muted">Boxes <span className="font-semibold text-fg">{rec.boxes}</span></div>
             <div className="text-muted">Per part <span className="font-semibold text-fg">{rec.perPartSecs != null ? `${rec.perPartSecs}s` : "—"}</span></div>
             <div className="text-muted">Window <span className="font-semibold text-fg">{rec.windowMins != null ? `${rec.windowMins}m` : "—"}</span></div>
           </div>
         </div>
+        {target > 0
+          ? <div className="mt-3 h-1.5 w-full rounded-full bg-border">
+              <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, pct || 0)}%`, background: met ? "#16a34a" : accent }} />
+            </div>
+          : <div className="mt-3 text-xs text-muted">No target set for today.</div>}
       </CardBody>
     </Card>
   );
 }
 
 // ── Shift start & deadtime banner ────────────────────────────────────────────
-function ShiftDeadtimeCard({ shift, operators, tv }: { shift: ShiftInfo; operators: string[]; tv: boolean }) {
+function ShiftDeadtimeCard({ shift, tv }: { shift: ShiftInfo; tv: boolean }) {
   // Severity from the start deadtime (machine-start lag): >60m red, >30m amber.
   const sev = (m: number) => (m > 60 ? "danger" : m > 30 ? "warn" : "ok");
   const tone = shift.count === 0 && shift.ongoingMin != null ? sev(shift.ongoingMin) : sev(shift.startDeadtimeMin);
   const border = tone === "danger" ? "border-t-danger" : tone === "warn" ? "border-t-warn" : "border-t-ok";
   const valCls = tone === "danger" ? "text-danger" : tone === "warn" ? "text-warn" : "text-ok";
-  const big = tv ? "text-5xl" : "text-4xl";
+  const big = tv ? "text-4xl" : "text-3xl";
 
   const Cell = ({ label, value, hint, cls = "text-fg" }: { label: string; value: string; hint?: string; cls?: string }) => (
     <div className="text-center">
@@ -338,18 +375,15 @@ function ShiftDeadtimeCard({ shift, operators, tv }: { shift: ShiftInfo; operato
           <span className="text-xs text-muted">shift starts {fmtClock(shift.shiftStartMin)}</span>
         </div>
         {shift.count === 0 ? (
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4">
             <Cell label="First production sticker" value="— none yet —" />
             <Cell label="Deadtime since shift start" value={shift.ongoingMin != null ? fmtMins(shift.ongoingMin) : "—"} cls={valCls} hint={shift.ongoingMin != null ? "machine not started" : "before shift start"} />
-            <Cell label="Operators on shift" value={String(operators.length)} hint={operators.join(", ") || "none logged in yet"} />
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+          <div className="grid grid-cols-3 gap-4">
             <Cell label="First sticker" value={fmtClock(shift.firstStickerMin!)} hint={`shift start ${fmtClock(shift.shiftStartMin)}`} />
             <Cell label="Start deadtime" value={fmtMins(shift.startDeadtimeMin)} cls={valCls} hint="time to first part" />
-            <Cell label="Longest idle gap" value={fmtMins(shift.longestGapMin)} cls={shift.longestGapMin > 60 ? "text-warn" : "text-fg"} hint={shift.longestGapAtMin != null ? `between stickers, from ${fmtClock(shift.longestGapAtMin)}` : "between stickers"} />
-            <Cell label="Stickers today" value={String(shift.count)} hint={shift.lastStickerMin != null ? `last ${fmtClock(shift.lastStickerMin)}` : undefined} />
-            <Cell label="Operators on shift" value={String(operators.length)} hint={operators.join(", ") || "none"} />
+            <Cell label="Longest idle gap" value={fmtMins(shift.longestGapMin)} cls={shift.longestGapMin > 60 ? "text-warn" : "text-fg"} hint={shift.longestGapAtMin != null ? `from ${fmtClock(shift.longestGapAtMin)}` : "between stickers"} />
           </div>
         )}
       </CardBody>
@@ -367,7 +401,6 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
   const viper = useMemo(() => todaysRecords(items, txns, "ViperDet"), [items, txns]);
   const axxis = useMemo(() => todaysRecords(items, txns, "Axxis"), [items, txns]);
   const shift = useMemo(() => shiftTimeline(items, txns, SHIFT_START_HOUR, nowMinutesInTz()), [items, txns]);
-  const operators = useMemo(() => activeOperatorsOn(txns, today), [txns, today]);
   const t1 = useMemo(() => lastT1Destruction(txns), [txns]);
   const bd = useMemo(() => breakdownSummary(breakdowns, month), [breakdowns, month]);
   const qcSum = useMemo(() => qcSummary(qc, today, month), [qc, today, month]);
@@ -375,7 +408,6 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
   const { rows: perDay, best } = useMemo(() => productionByDay(items, month), [items, month]);
   const printed = useMemo(() => printedOn(items, today), [items, today]);
   const moved = useMemo(() => movedToMagazinesOn(items, txns, today), [items, txns, today]);
-  const fg = useMemo(() => finishedGoodsInMagazines(items), [items]);
   const low = useMemo(() => lowStock(items), [items]);
 
   const printedTotal = printed.reduce((s, p) => s + p.quantity, 0);
@@ -383,6 +415,9 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
 
   const todayTargets = targets.filter((t) => t.date === today);
   const tomoTargets = targets.filter((t) => t.date === tomorrow);
+  const lineTarget = (re: RegExp) => todayTargets.filter((t) => re.test(t.production_line)).reduce((s, t) => s + t.quantity, 0);
+  const viperTarget = lineTarget(/viper/i);
+  const axxisTarget = lineTarget(/axxis/i);
 
   // Target-days met this month (gauge).
   const targetByDay = new Map<string, number>();
@@ -393,13 +428,19 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
 
   return (
     <>
-      {/* Shift start & deadtime — the kitchen motivator, first thing on screen */}
-      <ShiftDeadtimeCard shift={shift} operators={operators} tv={tv} />
+      {/* Shift deadtime (motivator) + tomorrow's targets side by side */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="xl:col-span-2"><ShiftDeadtimeCard shift={shift} tv={tv} /></div>
+        <Card><CardBody>
+          <div className="mb-3 text-sm font-semibold text-fg">Tomorrow&apos;s targets · {shortDay(tomorrow)}</div>
+          <TargetTable rows={tomoTargets} />
+        </CardBody></Card>
+      </div>
 
       {/* Today's production + target gauge */}
       <div className={`grid gap-4 ${tv ? "grid-cols-3" : "grid-cols-1 md:grid-cols-3"}`}>
-        <TodayCard rec={viper} accent="#f5911e" />
-        <TodayCard rec={axxis} accent="#4E79A7" />
+        <TodayCard rec={viper} target={viperTarget} accent="#f5911e" />
+        <TodayCard rec={axxis} target={axxisTarget} accent="#4E79A7" />
         <Card><CardBody>
           <div className="flex items-center gap-2"><Target size={16} className="text-accent" /><span className="font-semibold text-fg">Targets met this month</span></div>
           {targetDays.length ? (
@@ -435,48 +476,42 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
         </CardBody></Card>
       </div>
 
-      {/* Targets today / tomorrow */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <Card><CardBody>
-          <div className="mb-3 text-sm font-semibold text-fg">Today&apos;s targets · {shortDay(today)}</div>
-          <TargetTable rows={todayTargets} />
-        </CardBody></Card>
-        <Card><CardBody>
-          <div className="mb-3 text-sm font-semibold text-fg">Tomorrow&apos;s targets · {shortDay(tomorrow)}</div>
-          <TargetTable rows={tomoTargets} />
-        </CardBody></Card>
-      </div>
-
-      {/* Finished goods + low material */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <Card><CardBody>
-          <div className="mb-3 text-sm font-semibold text-fg">Finished goods in magazines</div>
-          <div className="grid grid-cols-2 gap-3">
-            {fg.families.map((f) => (
-              <div key={f.name} className="rounded-xl border border-border p-3">
-                <div className="text-xs text-muted">{f.name}</div><div className="text-2xl font-semibold text-fg">{fmtNum(f.value)}</div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-3 flex justify-between border-t border-border pt-2 text-xs text-muted">
-            <span>Magazine M1: <span className="font-semibold text-fg">{fmtNum(fg.m1)}</span></span>
-            <span>Magazine M2: <span className="font-semibold text-fg">{fmtNum(fg.m2)}</span></span>
-            <span>Total: <span className="font-semibold text-fg">{fmtNum(fg.total)}</span></span>
-          </div>
-        </CardBody></Card>
+      {/* Low material alerts (left) + 2×2 facility tiles (right) */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Card className={low.length ? "border-t-4 border-t-danger" : ""}><CardBody>
           <div className="mb-3 flex items-center gap-2"><AlertTriangle size={16} className={low.length ? "text-danger" : "text-muted"} /><span className="text-sm font-semibold text-fg">Low material alerts</span></div>
           <Grid maxH="16rem"
             cols={[{ key: "description", label: "Material" }, { key: "quantity", label: "Stock", num: true, fmt: fmtQty }, { key: "critical", label: "Critical", num: true, fmt: fmtQty }]}
             rows={low as unknown as Record<string, unknown>[]} tone={() => "bad"} />
-          <div className="mt-2 text-xs text-muted">Sourced from items with a critical level set in Inventory_Master ({low.length} below threshold). More materials need critical levels populated to match the full reference panel.</div>
+          <div className="mt-2 text-xs text-muted">Items below their critical level ({low.length}). Populate Original_Critical_Level on more materials to broaden this.</div>
         </CardBody></Card>
-      </div>
 
-      {/* Facility logs */}
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
-        <Card className={t1 && t1.daysSince > 14 ? "border-t-4 border-t-danger" : t1 && t1.daysSince > 7 ? "border-t-4 border-t-warn" : ""}>
-          <CardBody>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Card><CardBody>
+            <div className="flex items-center gap-2"><ClipboardCheck size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">QC crimp checks</span></div>
+            {qc.length ? (
+              <>
+                <div className="mt-2 flex items-end gap-2">
+                  <span className="text-2xl font-semibold text-fg">{qcSum.todayRate != null ? `${Math.round(qcSum.todayRate * 100)}%` : "—"}</span>
+                  <span className="mb-1 text-xs text-muted">pass today ({qcSum.todayChecks} checks)</span>
+                </div>
+                <div className="mt-1 text-sm text-muted">
+                  {qcSum.todayFail > 0 ? <span className="font-semibold text-danger">{qcSum.todayFail} fail today · </span> : null}
+                  month {qcSum.monthRate != null ? `${Math.round(qcSum.monthRate * 100)}%` : "—"} ({qcSum.monthChecks}) · last {fmtTime(qcSum.lastAt)}
+                </div>
+              </>
+            ) : <div className="mt-2 text-sm text-muted">No QC data available.</div>}
+          </CardBody></Card>
+          <Card className={bd.last && bd.last.nature === "Critical Breakdown" ? "border-t-4 border-t-danger" : ""}><CardBody>
+            <div className="flex items-center gap-2"><WrenchIcon size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Breakdowns</span></div>
+            {bd.last ? (
+              <>
+                <div className="mt-2 text-sm">Last: <span className="font-semibold text-fg">{fmtTime(bd.last.at)}</span> · {bd.last.line} {bd.last.station ? `· ${bd.last.station}` : ""}</div>
+                <div className="mt-1 text-sm text-muted">{bd.monthCount} this month · {fmtMins(bd.monthDowntimeMin)} downtime · {bd.daysSinceLast === 0 ? "today" : `${bd.daysSinceLast}d ago`}</div>
+              </>
+            ) : <div className="mt-2 text-sm text-muted">No breakdowns logged.</div>}
+          </CardBody></Card>
+          <Card className={t1 && t1.daysSince > 14 ? "border-t-4 border-t-danger" : t1 && t1.daysSince > 7 ? "border-t-4 border-t-warn" : ""}><CardBody>
             <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Last T1 destruction</span></div>
             {t1 ? (
               <>
@@ -489,42 +524,18 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
                 </div>
               </>
             ) : <div className="mt-2 text-sm text-muted">No destruction events logged.</div>}
-          </CardBody>
-        </Card>
-        <Card><CardBody>
-          <div className="flex items-center gap-2"><ClipboardCheck size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">QC crimp checks</span></div>
-          {qc.length ? (
-            <>
-              <div className="mt-2 flex items-end gap-2">
-                <span className="text-2xl font-semibold text-fg">{qcSum.todayRate != null ? `${Math.round(qcSum.todayRate * 100)}%` : "—"}</span>
-                <span className="mb-1 text-xs text-muted">pass today ({qcSum.todayChecks} checks)</span>
-              </div>
-              <div className="mt-1 text-sm text-muted">
-                {qcSum.todayFail > 0 ? <span className="font-semibold text-danger">{qcSum.todayFail} fail today · </span> : null}
-                month {qcSum.monthRate != null ? `${Math.round(qcSum.monthRate * 100)}%` : "—"} ({qcSum.monthChecks}) · last {fmtTime(qcSum.lastAt)}
-              </div>
-            </>
-          ) : <div className="mt-2 text-sm text-muted">No QC data available.</div>}
-        </CardBody></Card>
-        <Card className={bd.last && bd.last.nature === "Critical Breakdown" ? "border-t-4 border-t-danger" : ""}><CardBody>
-          <div className="flex items-center gap-2"><WrenchIcon size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Breakdowns</span></div>
-          {bd.last ? (
-            <>
-              <div className="mt-2 text-sm">Last: <span className="font-semibold text-fg">{fmtTime(bd.last.at)}</span> · {bd.last.line} {bd.last.station ? `· ${bd.last.station}` : ""}</div>
-              <div className="mt-1 text-sm text-muted">{bd.monthCount} this month · {fmtMins(bd.monthDowntimeMin)} downtime · {bd.daysSinceLast === 0 ? "today" : `${bd.daysSinceLast}d ago`}</div>
-            </>
-          ) : <div className="mt-2 text-sm text-muted">No breakdowns logged.</div>}
-        </CardBody></Card>
-        <Card><CardBody>
-          <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Last decontamination</span></div>
-          {dcn ? (
-            <>
-              <div className="mt-2 text-2xl font-semibold text-fg">{fmtTime(dcn.at)}</div>
-              <div className="mt-1 text-sm text-muted">{dcn.daysSince === 0 ? "today" : `${dcn.daysSince} day(s) ago`} · ViperDet{dcn.hmx_spill ? " · " : ""}{dcn.hmx_spill ? <span className="font-semibold text-warn">HMX spill noted</span> : ""}</div>
-              <div className="mt-1 text-xs text-muted">Axxis decon log still to be created.</div>
-            </>
-          ) : <div className="mt-2 text-sm text-muted">No decontamination log available.</div>}
-        </CardBody></Card>
+          </CardBody></Card>
+          <Card><CardBody>
+            <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Last decontamination</span></div>
+            {dcn ? (
+              <>
+                <div className="mt-2 text-2xl font-semibold text-fg">{fmtTime(dcn.at)}</div>
+                <div className="mt-1 text-sm text-muted">{dcn.daysSince === 0 ? "today" : `${dcn.daysSince} day(s) ago`} · ViperDet{dcn.hmx_spill ? " · " : ""}{dcn.hmx_spill ? <span className="font-semibold text-warn">HMX spill noted</span> : ""}</div>
+                <div className="mt-1 text-xs text-muted">Axxis decon log still to be created.</div>
+              </>
+            ) : <div className="mt-2 text-sm text-muted">No decontamination log available.</div>}
+          </CardBody></Card>
+        </div>
       </div>
     </>
   );
@@ -557,6 +568,16 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
 
   const monthLabel = (() => { const [y, mm] = m.split("-").map(Number); return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }); })();
 
+  // Production summary by variant — whole month, or a single day if one is picked
+  // from the chart. The chart's x-axis labels are shortDay(day), so map back.
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  useEffect(() => { setSelectedDay(null); }, [m]);  // clear day pick when month changes
+  const dayByLabel = useMemo(() => new Map(prod.rows.map((r) => [shortDay(r.day), r.day])), [prod.rows]);
+  const inScope = selectedDay ? (d: string) => d === selectedDay : (d: string) => d.startsWith(m);
+  const variants = useMemo(() => productionVariants(items, inScope), [items, selectedDay, m]); // eslint-disable-line
+  const scopeLabel = selectedDay ? shortDay(selectedDay) : monthLabel;
+  const variantsTotal = variants.reduce((s, v) => s + v.qty, 0);
+
   return (
     <>
       <div className="flex items-center justify-between">
@@ -587,9 +608,12 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
       </CardBody></Card>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <ChartCard title={`Production by day — ${monthLabel}`}>
+        <ChartCard title={`Production by day — ${monthLabel}`} subtitle="Click a day to filter the summary below">
           {prod.rows.length
-            ? <StackedBar rows={prod.rows.map((r) => ({ x: shortDay(r.day), ...PROD_FAMILIES.reduce((o, f) => ({ ...o, [f]: Number((r as unknown as Record<string, number>)[f]) || 0 }), {}) }))} xKey="x" series={[...PROD_FAMILIES]} colorMap={FAMILY_COLOURS} height={300} />
+            ? <StackedBar
+                rows={prod.rows.map((r) => ({ x: shortDay(r.day), ...PROD_FAMILIES.reduce((o, f) => ({ ...o, [f]: Number((r as unknown as Record<string, number>)[f]) || 0 }), {}) }))}
+                xKey="x" series={[...PROD_FAMILIES]} colorMap={FAMILY_COLOURS} height={300}
+                onSelect={(label) => setSelectedDay(dayByLabel.get(label) ?? null)} />
             : <div className="py-10 text-center text-sm text-muted">No production this month.</div>}
         </ChartCard>
         <Card><CardBody>
@@ -605,6 +629,28 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
           <div className="mt-3 border-t border-border pt-2 text-sm">Grand total <span className="text-xl font-semibold text-fg">{fmtNum(tot.total)}</span> units across {sd.rows.length} production day(s)</div>
         </CardBody></Card>
       </div>
+
+      <Card><CardBody>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-fg">Manufactured by product &amp; length — {scopeLabel}</div>
+            <div className="text-xs text-muted">{selectedDay ? "Showing one day (picked from the chart)." : "Whole month."} {variants.length} variant(s) · {fmtNum(variantsTotal)} units</div>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedDay && <button onClick={() => setSelectedDay(null)} className="flex items-center gap-1 rounded-lg border border-accent bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20"><X size={14} /> Reset to whole month</button>}
+            <button onClick={() => csvDownload(`production_${selectedDay || m}.csv`,
+              [{ key: "product", label: "Product" }, { key: "delay", label: "Delay" }, { key: "length", label: "Length" }, { key: "boxes", label: "Boxes" }, { key: "qty", label: "Units" }],
+              variants as unknown as Record<string, unknown>[])}
+              className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+          </div>
+        </div>
+        <Grid maxH="30rem"
+          cols={[
+            { key: "product", label: "Product" }, { key: "delay", label: "Delay" }, { key: "length", label: "Length" },
+            { key: "boxes", label: "Boxes", num: true, fmt: fmtQty }, { key: "qty", label: "Units", num: true, fmt: fmtQty },
+          ]}
+          rows={variants as unknown as Record<string, unknown>[]} />
+      </CardBody></Card>
     </>
   );
 }
@@ -844,8 +890,86 @@ function RawMaterialsView({ items }: { items: InventoryItem[] }) {
   );
 }
 
+// ── Financial Lookup: pivot by financial number across ALL rooms ─────────────
+function FinancialLookupView({ items }: { items: InventoryItem[] }) {
+  const data = useMemo(() => financialMatrix(items), [items]);
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const rows = needle ? data.rows.filter((r) => r.financial_no.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)) : data.rows;
+    const locations = data.locations.filter((l) => rows.some((r) => r.cells[l]));
+    const colTotals: Record<string, number> = {};
+    for (const l of locations) colTotals[l] = rows.reduce((s, r) => s + (r.cells[l] || 0), 0);
+    return { locations, rows, colTotals, grandTotal: rows.reduce((s, r) => s + r.total, 0) };
+  }, [data, q]);
+
+  const exportCsv = () => {
+    const cols: Col[] = [{ key: "financial_no", label: "Financial No" }, { key: "description", label: "Description" },
+      ...filtered.locations.map((l) => ({ key: l, label: l })), { key: "__total", label: "Total" }];
+    csvDownload(`financial_lookup_${today()}.csv`, cols, filtered.rows.map((r) => ({ financial_no: r.financial_no, description: r.description, ...r.cells, __total: r.total })));
+  };
+
+  return (
+    <Card><CardBody>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">Financial number lookup — totals across all rooms</div>
+          <div className="text-xs text-muted">{filtered.rows.length} of {data.rows.length} financial numbers · <span className="font-semibold text-fg">{fmtNum(filtered.grandTotal)}</span> units · Active stock</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Financial number"
+              className="w-64 rounded-lg border border-border bg-bg py-1.5 pl-8 pr-3 text-sm outline-none focus:border-accent" />
+          </div>
+          <button onClick={exportCsv} className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+        </div>
+      </div>
+      <FinancialTable data={filtered} />
+    </CardBody></Card>
+  );
+}
+
+function FinancialTable({ data }: { data: FinResult }) {
+  const { locations, rows, colTotals, grandTotal } = data;
+  if (!rows.length) return <div className="py-12 text-center text-sm text-muted">No financial-numbered stock matches.</div>;
+  const cell = (n: number) => (n ? fmtNum(n) : "—");
+  return (
+    <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: "38rem" }}>
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 z-10 bg-bg text-xs uppercase tracking-wide text-muted">
+          <tr>
+            <th className="sticky left-0 z-20 bg-bg px-3 py-2 text-left font-medium">Financial No</th>
+            <th className="bg-bg px-3 py-2 text-left font-medium">Description</th>
+            {locations.map((l) => <th key={l} className="whitespace-nowrap px-3 py-2 text-right font-medium">{l}</th>)}
+            <th className="px-3 py-2 text-right font-semibold text-fg">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t border-border hover:bg-bg/60">
+              <td className="sticky left-0 z-10 whitespace-nowrap bg-surface px-3 py-2 font-medium text-fg">{r.financial_no}</td>
+              <td className="whitespace-nowrap px-3 py-2 text-muted">{r.description}</td>
+              {locations.map((l) => <td key={l} className="px-3 py-2 text-right tabular-nums text-muted">{cell(r.cells[l])}</td>)}
+              <td className="px-3 py-2 text-right font-semibold tabular-nums text-fg">{fmtNum(r.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot className="sticky bottom-0 bg-bg">
+          <tr className="border-t-2 border-border">
+            <td className="sticky left-0 z-10 bg-bg px-3 py-2 font-semibold text-fg">Total on site</td>
+            <td className="bg-bg px-3 py-2" />
+            {locations.map((l) => <td key={l} className="px-3 py-2 text-right font-semibold tabular-nums text-fg">{fmtNum(colTotals[l])}</td>)}
+            <td className="px-3 py-2 text-right font-bold tabular-nums text-fg">{fmtNum(grandTotal)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 // ── Finished Goods: sellable stock pivot (colour-keyed) + shelf-age alerts ───
-function FinishedGoodsView({ items }: { items: InventoryItem[] }) {
+function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; customer?: boolean }) {
   const data = useMemo(() => inventoryMatrix(items, true, SITE_ROOMS), [items]);
   const [pt, setPt] = useState<string>("all");
   const [q, setQ] = useState("");
@@ -874,6 +998,8 @@ function FinishedGoodsView({ items }: { items: InventoryItem[] }) {
 
   return (
     <>
+      {/* Shelf-age alerts are an internal/ops concern — hidden from the customer (FG-only) role. */}
+      {!customer && (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <Stat label="Sellable finished goods" value={fmtNum(aged.length)} sub={`${fmtNum(sumQty(aged))} units · ${data.locations.length} rooms`} />
         <Stat label="Over 12 months" value={fmtNum(over12.length)} status={over12.length ? "warn" : "ok"}
@@ -881,8 +1007,9 @@ function FinishedGoodsView({ items }: { items: InventoryItem[] }) {
         <Stat label="Over 24 months — expired" value={fmtNum(over24.length)} status={over24.length ? "bad" : "ok"}
           sub={`${fmtNum(sumQty(over24))} units · cannot be sold · click to list`} onClick={() => setFilter(filter === "24" ? null : "24")} />
       </div>
+      )}
 
-      {filter && (
+      {!customer && filter && (
         <Card className={filter === "24" ? "border-t-4 border-t-danger" : "border-t-4 border-t-warn"}><CardBody>
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm font-semibold text-fg">

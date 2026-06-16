@@ -9,7 +9,9 @@
 import type { InventoryItem, Transaction } from "@/lib/api";
 import { dateKey, todayKey, clockMinutes } from "@/lib/utils";
 
-export const isFinishedGood = (i: InventoryItem) => i.type === "FINISHED_GOOD";
+// A real finished good. "Print Error" labels are misprints, never actual stock,
+// so they're excluded from all production counts, charts and totals.
+export const isFinishedGood = (i: InventoryItem) => i.type === "FINISHED_GOOD" && i.status !== "Print Error";
 export const prodDateKey = (i: InventoryItem) => dateKey(i.first_seen_at || i.prod_date);
 
 // Production line for a finished good (drives the ViperDet / Axxis split).
@@ -81,6 +83,26 @@ export function productionByDay(items: InventoryItem[], monthPrefix: string) {
     if (total > best.total) best = { day: r.day, total };
   }
   return { rows, best };
+}
+
+// Finished-goods manufactured in scope, grouped by product type + delay + length
+// (one row per sticker variant). `inScope` decides which production days count.
+export type ProdVariant = { product: string; delay: string; length: string; family: string | null; qty: number; boxes: number };
+const lenNum = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, "")); return isNaN(n) ? 0 : n; };
+export function productionVariants(items: InventoryItem[], inScope: (dayKey: string) => boolean): ProdVariant[] {
+  const m = new Map<string, ProdVariant>();
+  for (const i of items) {
+    if (!isFinishedGood(i)) continue;
+    const day = prodDateKey(i);
+    if (!day || !inScope(day)) continue;
+    const key = `${i.product_type}|${i.delay_display}|${i.length}`;
+    const r = m.get(key) || { product: i.product_type, delay: i.delay_display, length: i.length, family: prodFamily(i), qty: 0, boxes: 0 };
+    r.qty += i.original_quantity; r.boxes++;
+    m.set(key, r);
+  }
+  const rank = (f: string | null) => { const x = f ? FAMILY_ORDER.indexOf(f) : -1; return x < 0 ? FAMILY_ORDER.length : x; };
+  return Array.from(m.values()).sort((a, b) =>
+    rank(a.family) - rank(b.family) || a.product.localeCompare(b.product) || lenNum(a.length) - lenNum(b.length) || a.delay.localeCompare(b.delay));
 }
 
 export type PrintedRow = { product: string; delay: string; length: string; quantity: number };
@@ -302,6 +324,36 @@ export function inventoryMatrix(items: InventoryItem[], finishedGoods: boolean, 
   const colTotals: Record<string, number> = {};
   for (const l of locations) colTotals[l] = colTotal.get(l) || 0;
   return { locations: [...locations], rows, colTotals, grandTotal: rows.reduce((s, r) => s + r.total, 0) };
+}
+
+// ── Financial-number lookup: one row per financial number, across ALL rooms ──
+// For month-end checks: search a financial number, see its total across every
+// location on site. Includes ALL locations (Maintenance Room etc.), Active stock.
+export type FinRow = { financial_no: string; description: string; cells: Record<string, number>; total: number };
+export type FinResult = { locations: string[]; rows: FinRow[]; colTotals: Record<string, number>; grandTotal: number };
+
+export function financialMatrix(items: InventoryItem[]): FinResult {
+  const sel = items.filter((i) => i.status === "Active" && i.financial_no.trim() !== "" && i.current_location.trim() !== "");
+  const byFin = new Map<string, { description: string; cells: Map<string, number> }>();
+  const colTotal = new Map<string, number>();
+  for (const i of sel) {
+    const fin = i.financial_no.trim();
+    const loc = i.current_location.trim();
+    if (!byFin.has(fin)) byFin.set(fin, { description: i.description || "(no description)", cells: new Map() });
+    const e = byFin.get(fin)!;
+    e.cells.set(loc, (e.cells.get(loc) || 0) + i.current_quantity);
+    colTotal.set(loc, (colTotal.get(loc) || 0) + i.current_quantity);
+  }
+  const locations = [...colTotal.keys()].sort((a, b) => (colTotal.get(b) || 0) - (colTotal.get(a) || 0));
+  const rows = Array.from(byFin, ([financial_no, e]) => {
+    const cells: Record<string, number> = {};
+    let total = 0;
+    for (const l of locations) { const q = e.cells.get(l) || 0; cells[l] = q; total += q; }
+    return { financial_no, description: e.description, cells, total };
+  }).filter((r) => r.total !== 0).sort((a, b) => a.financial_no.localeCompare(b.financial_no, undefined, { numeric: true }));
+  const colTotals: Record<string, number> = {};
+  for (const l of locations) colTotals[l] = colTotal.get(l) || 0;
+  return { locations, rows, colTotals, grandTotal: rows.reduce((s, r) => s + r.total, 0) };
 }
 
 // ── Finished-goods shelf age (from ProdDate_Formatted) ───────────────────────

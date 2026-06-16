@@ -103,6 +103,7 @@ function mapInventory_(r) {
     current_quantity: num_(r['Current_Quantity']),
     original_quantity: num_(r['Original_Quantity']),
     critical_level: str_(r['Original_Critical_Level']) ? num_(r['Original_Critical_Level']) : null,
+    financial_no: str_(r['Financial_No']),
     current_location: str_(r['Current_Location']),
     current_sub_location: str_(r['Current_Sub_Location']),
     status: str_(r['Status']) || 'Unknown',

@@ -28,6 +28,7 @@ export type InventoryItem = {
   current_quantity: number;
   original_quantity: number;
   critical_level: number | null;  // Original_Critical_Level (set for only some items)
+  financial_no: string;
   current_location: string;
   current_sub_location: string;
   status: string;               // Active | Sold | Destroyed | Inactive | Print Error
@@ -231,6 +232,7 @@ function mapInventoryRow(r: Record<string, string>): InventoryItem {
     current_quantity: toNum(r["Current_Quantity"]),
     original_quantity: toNum(r["Original_Quantity"]),
     critical_level: r["Original_Critical_Level"]?.trim() ? toNum(r["Original_Critical_Level"]) : null,
+    financial_no: r["Financial_No"] ?? "",
     current_location: r["Current_Location"] ?? "",
     current_sub_location: r["Current_Sub_Location"] ?? "",
     status: r["Status"] || "Unknown",
