@@ -49,9 +49,10 @@ function doGet(e) {
     switch (params.action) {
       case 'stockOnHand':  return _json(stockOnHand_());
       case 'transactions': return _json(transactions_());
-      case 'users':        return _json(users_());
-      case 'targets':      return _json(targets_());
-      default:             return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets'] });
+      case 'users':         return _json(users_());
+      case 'targets':       return _json(targets_());
+      case 'batchContents': return _json(batchContents_());
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -78,6 +79,17 @@ function users_() {
     return { name: str_(r['Name']), pin: str_(r['PIN']), auth_level: str_(r['Auth_Level']),
              active: str_(r['Active']), email: str_(r['Email']) };
   }).filter(function (u) { return u.name; });
+  return { items: items };
+}
+
+function batchContents_() {
+  var rows = readTab_('NDT_Batch_Contents');
+  var items = rows.map(function (r) {
+    return { timestamp: localTs_(r['Timestamp']), batch_qr: str_(r['Batch_QR']), line: str_(r['Production_Line']),
+             item: str_(r['Item_Description']), quantity: num_(r['Quantity']), unit: str_(r['Unit']),
+             entry_type: str_(r['Entry_Type']), logged_by: str_(r['Logged_By']),
+             assembly_group: str_(r['Assembly_Group_Id']), notes: str_(r['Notes']) };
+  }).filter(function (c) { return c.batch_qr; });
   return { items: items };
 }
 
@@ -110,6 +122,7 @@ function mapInventory_(r) {
     last_updated_at: iso_(r['Last_Updated_At']),
     last_updated_by: str_(r['Last_Updated_By']),
     first_seen_at: iso_(r['First_Seen_At']),
+    destruction_date: iso_(r['Destruction_Date']),
     product_type: str_(r['ProductType']),
     delay_display: str_(r['DelayDisplay']),
     length: str_(r['Length_M_String']),

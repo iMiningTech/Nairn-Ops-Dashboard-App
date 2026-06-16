@@ -5,9 +5,9 @@ import Image from "next/image";
 import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
   CheckCircle2, Search, Download, Factory, ArrowRightLeft, Target, PackageCheck, Flame, ShieldCheck,
-  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut,
+  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -24,6 +24,7 @@ import {
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary } from "@/lib/sales";
+import { awaitingDestruction, destroyedInRange, wasteInRange } from "@/lib/destruction";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz } from "@/lib/utils";
 
@@ -38,6 +39,7 @@ const VIEWS = [
   { id: "finished", label: "Finished Goods", icon: Boxes },
   { id: "rawmaterials", label: "Raw Materials", icon: Package },
   { id: "financial", label: "Financial Lookup", icon: Hash },
+  { id: "destruction", label: "Destruction & Waste", icon: Trash2 },
   { id: "sales", label: "Sales History", icon: Receipt },
   { id: "stock", label: "Filtered Inventory", icon: Search },
   { id: "recon", label: "Reconciliation", icon: Scale },
@@ -100,6 +102,7 @@ export default function Dashboard() {
   const [breakdowns, setBreakdowns] = useState<Breakdown[]>([]);
   const [qc, setQc] = useState<QcCheck[]>([]);
   const [decon, setDecon] = useState<Decon[]>([]);
+  const [batchContents, setBatchContents] = useState<BatchContent[]>([]);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -125,13 +128,14 @@ export default function Dashboard() {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const [stock, tx, us, tg, bd, qcr, dc] = await Promise.all([
+      const [stock, tx, us, tg, bd, qcr, dc, bcs] = await Promise.all([
         api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
         api.breakdowns().catch(() => ({ items: [] as Breakdown[] })),
         api.qcChecks().catch(() => ({ items: [] as QcCheck[] })),
         api.decon().catch(() => ({ items: [] as Decon[] })),
+        api.batchContents().catch(() => ({ items: [] as BatchContent[] })),
       ]);
       setItems(stock.items || []);
       setTxns(tx.items || []);
@@ -140,6 +144,7 @@ export default function Dashboard() {
       setBreakdowns(bd.items || []);
       setQc(qcr.items || []);
       setDecon(dc.items || []);
+      setBatchContents(bcs.items || []);
       setGeneratedAt(stock.generated_at);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -256,6 +261,7 @@ export default function Dashboard() {
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
               {view === "financial" && <FinancialLookupView items={items} />}
+              {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
@@ -965,6 +971,88 @@ function FinancialTable({ data }: { data: FinResult }) {
         </tfoot>
       </table>
     </div>
+  );
+}
+
+// ── Destruction & Waste ──────────────────────────────────────────────────────
+function DestructionView({ items, txns, contents, range, rangeLabel }:
+  { items: InventoryItem[]; txns: Transaction[]; contents: BatchContent[]; range: DateRange; rangeLabel: string }) {
+  const awaiting = useMemo(() => awaitingDestruction(items, contents), [items, contents]);
+  const { batches, direct, lineItems } = useMemo(() => destroyedInRange(items, txns, contents, range.from, range.to), [items, txns, contents, range]);
+  const waste = useMemo(() => wasteInRange(contents, range.from, range.to), [contents, range]);
+
+  return (
+    <>
+      <div className="text-sm text-muted">Destroyed / waste shown for {rangeLabel} · awaiting list is live</div>
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label="Awaiting destruction" value={awaiting.length} status={awaiting.length ? "warn" : "ok"} sub="NDT batches not yet destroyed" />
+        <Stat label="Batches destroyed" value={batches.length} sub={rangeLabel} />
+        <Stat label="Direct destructions" value={direct.length} sub="labels straight to T1" />
+        <Stat label="Waste entries" value={waste.length} sub={rangeLabel} />
+      </div>
+
+      <Card className={awaiting.length ? "border-t-4 border-t-warn" : ""}><CardBody>
+        <div className="mb-3 text-sm font-semibold text-fg">Awaiting destruction — NDT batches</div>
+        <Grid maxH="20rem"
+          cols={[
+            { key: "qr", label: "Batch QR" }, { key: "line", label: "Line" },
+            { key: "lines", label: "Items", num: true }, { key: "pieces", label: "Pieces", num: true, fmt: fmtQty },
+            { key: "meters", label: "Metres", num: true, fmt: fmtQty }, { key: "opened", label: "Opened", fmt: fmtTs },
+          ]}
+          rows={awaiting as unknown as Record<string, unknown>[]} tone={() => "warn"} />
+      </CardBody></Card>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <Card><CardBody>
+          <div className="mb-3 text-sm font-semibold text-fg">NDT batches destroyed · {rangeLabel}</div>
+          <Grid maxH="22rem"
+            cols={[
+              { key: "at", label: "Destroyed", fmt: fmtTs }, { key: "qr", label: "Batch QR" }, { key: "line", label: "Line" },
+              { key: "lines", label: "Items", num: true }, { key: "pieces", label: "Pieces", num: true, fmt: fmtQty },
+              { key: "meters", label: "Metres", num: true, fmt: fmtQty }, { key: "destroyer", label: "By" },
+            ]}
+            rows={batches as unknown as Record<string, unknown>[]} />
+        </CardBody></Card>
+        <Card><CardBody>
+          <div className="mb-3 text-sm font-semibold text-fg">Direct destructions (labels → T1) · {rangeLabel}</div>
+          <Grid maxH="22rem"
+            cols={[
+              { key: "at", label: "Destroyed", fmt: fmtTs }, { key: "qr", label: "Barcode" }, { key: "description", label: "Description" },
+              { key: "type", label: "Type" }, { key: "qty", label: "Qty", num: true, fmt: fmtQty },
+            ]}
+            rows={direct as unknown as Record<string, unknown>[]} />
+        </CardBody></Card>
+      </div>
+
+      <Card><CardBody>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-sm font-semibold text-fg">Contents of batches destroyed · {rangeLabel}</div>
+          <button onClick={() => csvDownload(`destroyed_contents_${today()}.csv`,
+            [{ key: "batch_qr", label: "Batch QR" }, { key: "item", label: "Item" }, { key: "quantity", label: "Qty" }, { key: "unit", label: "Unit" }, { key: "entry_type", label: "Type" }, { key: "logged_by", label: "By" }],
+            lineItems as unknown as Record<string, unknown>[])}
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+        </div>
+        <Grid maxH="24rem"
+          cols={[
+            { key: "batch_qr", label: "Batch QR" }, { key: "item", label: "Item" },
+            { key: "quantity", label: "Qty", num: true, fmt: fmtQty }, { key: "unit", label: "Unit" },
+            { key: "entry_type", label: "Entry type" }, { key: "logged_by", label: "Logged by" },
+          ]}
+          rows={lineItems as unknown as Record<string, unknown>[]} />
+      </CardBody></Card>
+
+      <Card><CardBody>
+        <div className="mb-3 text-sm font-semibold text-fg">Waste · {rangeLabel}</div>
+        <Grid maxH="20rem"
+          cols={[
+            { key: "at", label: "When", fmt: fmtTs }, { key: "item", label: "Item" },
+            { key: "qty", label: "Qty", num: true, fmt: fmtQty }, { key: "unit", label: "Unit" },
+            { key: "batch_qr", label: "Batch" }, { key: "logged_by", label: "By" },
+          ]}
+          rows={waste as unknown as Record<string, unknown>[]} />
+        <div className="mt-2 text-xs text-muted">Waste currently captured as NDT batch entries (Entry_Type = Waste). Standalone bag-weight waste isn&apos;t tagged in the data yet — once you decide how it&apos;s logged (e.g. a reason &quot;Waste&quot; with a weight, or a dedicated tab), I&apos;ll wire it in here.</div>
+      </CardBody></Card>
+    </>
   );
 }
 

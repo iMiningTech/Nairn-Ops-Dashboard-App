@@ -35,6 +35,7 @@ export type InventoryItem = {
   last_updated_at: string | null;
   last_updated_by: string;
   first_seen_at: string | null;
+  destruction_date: string | null;
   // Product attributes (mostly populated for FINISHED_GOOD / RAW_MATERIAL).
   product_type: string;         // e.g. "MS DUAL"
   delay_display: string;        // e.g. "25 / 500 ms"
@@ -118,6 +119,20 @@ export type QcCheck = {
   personnel: string;
 };
 export type Decon = { at: string; line: string; hmx_spill: boolean };
+
+// A line item inside an NDT batch (NDT_Batch_Contents tab).
+export type BatchContent = {
+  timestamp: string | null;
+  batch_qr: string;
+  line: string;            // Production_Line
+  item: string;            // Item_Description
+  quantity: number;
+  unit: string;            // pieces | meters | …
+  entry_type: string;      // QC Sample | Waste | Production | …
+  logged_by: string;
+  assembly_group: string;
+  notes: string;
+};
 
 // ── Apps Script transport (JSON) ─────────────────────────────────────────────
 async function getJson<T>(action: string, params: Record<string, string> = {}): Promise<T> {
@@ -239,6 +254,7 @@ function mapInventoryRow(r: Record<string, string>): InventoryItem {
     last_updated_at: orNull(r["Last_Updated_At"] ?? ""),
     last_updated_by: r["Last_Updated_By"] ?? "",
     first_seen_at: orNull(r["First_Seen_At"] ?? ""),
+    destruction_date: orNull(r["Destruction_Date"] ?? ""),
     product_type: r["ProductType"] ?? "",
     delay_display: r["DelayDisplay"] ?? "",
     length: r["Length_M_String"] ?? "",
@@ -274,6 +290,21 @@ function mapTargetRow(r: Record<string, string>): DailyTarget {
     product: r["Product"] ?? "",
     specifics: r["Specifics"] ?? "",
     quantity: toNum(r["Target_Quantity"] ?? r["Quantity"]),
+  };
+}
+
+function mapBatchContentRow(r: Record<string, string>): BatchContent {
+  return {
+    timestamp: orNull(r["Timestamp"] ?? ""),
+    batch_qr: r["Batch_QR"] ?? "",
+    line: r["Production_Line"] ?? "",
+    item: r["Item_Description"] ?? "",
+    quantity: toNum(r["Quantity"]),
+    unit: r["Unit"] ?? "",
+    entry_type: r["Entry_Type"] ?? "",
+    logged_by: r["Logged_By"] ?? "",
+    assembly_group: r["Assembly_Group_Id"] ?? "",
+    notes: r["Notes"] ?? "",
   };
 }
 
@@ -338,5 +369,9 @@ export const api = {
   async decon(): Promise<{ items: Decon[] }> {
     try { return { items: (await gvizByGid(EXT.deconViper.id, EXT.deconViper.gid)).map(mapDecon).filter((d) => d.at) }; }
     catch { return { items: [] }; }
+  },
+  async batchContents(): Promise<{ items: BatchContent[] }> {
+    if (MODE === "gviz") return { items: (await gvizTab("NDT_Batch_Contents")).map(mapBatchContentRow).filter((c) => c.batch_qr) };
+    return getJson<{ items: BatchContent[] }>("batchContents");
   },
 };
