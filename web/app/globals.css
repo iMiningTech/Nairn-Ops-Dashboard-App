@@ -41,3 +41,13 @@ html, body {
 /* Kitchen-TV mode (?tv=1) bumps base font + hides chrome for 3-metre legibility. */
 .tv-mode { font-size: 18px; }
 .tv-mode .tv-hide { display: none !important; }
+
+/* Print / Save-as-PDF: drop the app chrome and let content flow onto pages. */
+@media print {
+  html, body { background: #fff !important; }
+  aside, header, .no-print { display: none !important; }
+  .h-screen { height: auto !important; overflow: visible !important; }
+  main { overflow: visible !important; height: auto !important; padding: 0 !important; }
+  .print-card { break-inside: avoid; }
+  @page { size: A4; margin: 14mm; }
+}

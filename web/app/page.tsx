@@ -5,9 +5,9 @@ import Image from "next/image";
 import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
   CheckCircle2, Search, Download, Factory, ArrowRightLeft, Target, PackageCheck, Flame, ShieldCheck,
-  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2,
+  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -44,6 +44,7 @@ const VIEWS = [
   { id: "stock", label: "Filtered Inventory", icon: Search },
   { id: "recon", label: "Reconciliation", icon: Scale },
   { id: "maint", label: "Maintenance Stores", icon: Wrench },
+  { id: "capabilities", label: "Capabilities", icon: BookOpen },
 ] as const;
 type ViewId = (typeof VIEWS)[number]["id"];
 
@@ -103,6 +104,8 @@ export default function Dashboard() {
   const [qc, setQc] = useState<QcCheck[]>([]);
   const [decon, setDecon] = useState<Decon[]>([]);
   const [batchContents, setBatchContents] = useState<BatchContent[]>([]);
+  const [lengths, setLengths] = useState<ManufacturableLength[]>([]);
+  const [reference, setReference] = useState<RefRow[]>([]);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -128,7 +131,7 @@ export default function Dashboard() {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const [stock, tx, us, tg, bd, qcr, dc, bcs] = await Promise.all([
+      const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr] = await Promise.all([
         api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
@@ -136,6 +139,8 @@ export default function Dashboard() {
         api.qcChecks().catch(() => ({ items: [] as QcCheck[] })),
         api.decon().catch(() => ({ items: [] as Decon[] })),
         api.batchContents().catch(() => ({ items: [] as BatchContent[] })),
+        api.manufacturableLengths().catch(() => ({ items: [] as ManufacturableLength[] })),
+        api.manufacturingReference().catch(() => ({ items: [] as RefRow[] })),
       ]);
       setItems(stock.items || []);
       setTxns(tx.items || []);
@@ -145,6 +150,8 @@ export default function Dashboard() {
       setQc(qcr.items || []);
       setDecon(dc.items || []);
       setBatchContents(bcs.items || []);
+      setLengths(ml.items || []);
+      setReference(mr.items || []);
       setGeneratedAt(stock.generated_at);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -266,6 +273,7 @@ export default function Dashboard() {
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}
+              {view === "capabilities" && <CapabilitiesView lengths={lengths} reference={reference} />}
             </div>
           )}
         </main>
@@ -891,7 +899,7 @@ function RawMaterialsView({ items }: { items: InventoryItem[] }) {
         <div className="text-sm font-semibold text-fg">Raw materials on hand — by location</div>
         <MatrixHeader data={data} onExport={() => exportMatrix(`raw_materials_${today()}.csv`, data)} />
       </div>
-      <MatrixTable data={data} />
+      <MatrixTable data={data} maxH="78vh" />
     </CardBody></Card>
   );
 }
@@ -1141,7 +1149,7 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
           </div>
           <div className="text-xs text-muted">{filtered.rows.length} of {data.rows.length} descriptions · <span className="font-semibold text-fg">{fmtNum(filtered.grandTotal)}</span> units</div>
         </div>
-        <MatrixTable data={filtered} familyColours={FAMILY_COLOURS} />
+        <MatrixTable data={filtered} familyColours={FAMILY_COLOURS} maxH="78vh" />
       </CardBody></Card>
     </>
   );
@@ -1198,12 +1206,12 @@ function tint(hex: string, amt: number) {
 
 // Pivot table: sticky header + sticky description column + a totals footer.
 // When familyColours is supplied, rows are tinted/keyed by product family.
-function MatrixTable({ data, familyColours }: { data: MatrixResult; familyColours?: Record<string, string> }) {
+function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResult; familyColours?: Record<string, string>; maxH?: string }) {
   const { locations, rows, colTotals, grandTotal } = data;
   if (!rows.length) return <div className="py-12 text-center text-sm text-muted">No stock for this category.</div>;
   const cell = (n: number) => (n ? fmtNum(n) : "—");
   return (
-    <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: "38rem" }}>
+    <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: maxH }}>
       <table className="w-full text-sm">
         <thead className="sticky top-0 z-10 bg-bg text-xs uppercase tracking-wide text-muted">
           <tr>
@@ -1349,6 +1357,91 @@ function MaintenanceView({ items }: { items: InventoryItem[] }) {
         </div>
         <Grid cols={cols} rows={df as unknown as Record<string, unknown>[]} tone={(r) => ((r.current_quantity as number) === 0 ? "warn" : undefined)} maxH="34rem" />
       </CardBody></Card>
+    </>
+  );
+}
+
+// ── Capabilities (manufacturing cheat sheet) — printable ─────────────────────
+function CapabilitiesView({ lengths, reference }: { lengths: ManufacturableLength[]; reference: RefRow[] }) {
+  // Lengths each line can make, from Manufacturable_Lengths (Active only).
+  const byLine = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const l of lengths) {
+      if (!l.active) continue;
+      if (!m.has(l.line)) m.set(l.line, []);
+      m.get(l.line)!.push(l.length_display);
+    }
+    return Array.from(m, ([line, lens]) => ({ line, lens }));
+  }, [lengths]);
+
+  // Reference rows grouped by Section, preserving sheet order.
+  const sections = useMemo(() => {
+    const order: string[] = [];
+    const m = new Map<string, RefRow[]>();
+    for (const r of reference) { if (!m.has(r.section)) { m.set(r.section, []); order.push(r.section); } m.get(r.section)!.push(r); }
+    return order.map((s) => ({ section: s, rows: m.get(s)! }));
+  }, [reference]);
+
+  return (
+    <>
+      <div className="flex items-center justify-between">
+        <div className="text-base font-semibold text-fg">Manufacturing capabilities — cheat sheet</div>
+        <button onClick={() => window.print()} className="no-print flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-sm hover:bg-bg">
+          <Printer size={15} /> Print / Save PDF
+        </button>
+      </div>
+
+      {/* Lengths per line (live from Manufacturable_Lengths) */}
+      <Card className="print-card"><CardBody>
+        <div className="mb-3 text-sm font-semibold text-fg">Lengths each line can produce</div>
+        {byLine.length ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {byLine.map(({ line, lens }) => (
+              <div key={line} className="rounded-xl border border-border p-3">
+                <div className="mb-2 font-semibold text-fg">{line}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {lens.map((l) => <span key={l} className="rounded-lg border border-border bg-bg px-2 py-1 text-xs">{l}</span>)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <div className="text-sm text-muted">No active lengths in Manufacturable_Lengths.</div>}
+      </CardBody></Card>
+
+      {/* Editable reference sections */}
+      {sections.map(({ section, rows }) => (
+        <Card key={section} className="print-card"><CardBody>
+          <div className="mb-3 text-sm font-semibold text-fg">{section}</div>
+          <div className="overflow-hidden rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className="border-t border-border first:border-t-0">
+                    <td className="px-3 py-2 align-top font-medium text-fg">
+                      <span className="flex items-center gap-2">
+                        {r.colour ? <span className="inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-border" style={{ background: r.colour }} /> : null}
+                        {r.item}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 align-top text-fg">{r.value}</td>
+                    <td className="px-3 py-2 align-top text-muted">{r.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardBody></Card>
+      ))}
+
+      {!sections.length && (
+        <Card><CardBody>
+          <div className="text-sm text-muted">
+            No reference content yet. Create a <span className="font-mono text-fg">Manufacturing_Reference</span> tab with columns:
+            <span className="font-mono text-fg"> Section · Item · Value · Detail · Colour</span> and it renders here grouped by Section.
+            <div className="mt-2">Examples: Section=<span className="font-mono">Shock Tube Colours</span>, Item=<span className="font-mono">Orange</span>, Value=<span className="font-mono">In-hole / downhole</span>, Colour=<span className="font-mono">#f5911e</span>; or Section=<span className="font-mono">Packing Quantities</span>, Item=<span className="font-mono">1.1D Detonators</span>, Value=<span className="font-mono">100 / box</span>, Detail=<span className="font-mono">UN0030</span>.</div>
+          </div>
+        </CardBody></Card>
+      )}
     </>
   );
 }

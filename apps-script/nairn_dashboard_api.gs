@@ -52,7 +52,9 @@ function doGet(e) {
       case 'users':         return _json(users_());
       case 'targets':       return _json(targets_());
       case 'batchContents': return _json(batchContents_());
-      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents'] });
+      case 'manufacturableLengths': return _json(manufacturableLengths_());
+      case 'manufacturingReference': return _json(manufacturingReference_());
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -79,6 +81,25 @@ function users_() {
     return { name: str_(r['Name']), pin: str_(r['PIN']), auth_level: str_(r['Auth_Level']),
              active: str_(r['Active']), email: str_(r['Email']) };
   }).filter(function (u) { return u.name; });
+  return { items: items };
+}
+
+function manufacturableLengths_() {
+  var rows = readTab_('Manufacturable_Lengths');
+  var items = rows.map(function (r) {
+    return { line: str_(r['Production_Line']), length_display: str_(r['Length_Display']),
+             length_numeric: num_(r['Length_Numeric']), active: /true/i.test(String(r['Active'])) };
+  }).filter(function (l) { return l.line; });
+  return { items: items };
+}
+
+function manufacturingReference_() {
+  if (!_ss().getSheetByName('Manufacturing_Reference')) return { items: [] };
+  var rows = readTab_('Manufacturing_Reference');
+  var items = rows.map(function (r) {
+    return { section: str_(r['Section']), item: str_(r['Item']), value: str_(r['Value']),
+             detail: str_(r['Detail']), colour: str_(r['Colour']) };
+  }).filter(function (r) { return r.section; });
   return { items: items };
 }
 

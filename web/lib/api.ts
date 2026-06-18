@@ -120,6 +120,11 @@ export type QcCheck = {
 };
 export type Decon = { at: string; line: string; hmx_spill: boolean };
 
+// Reference / cheat-sheet data for the Capabilities tab.
+export type ManufacturableLength = { line: string; length_display: string; length_numeric: number; active: boolean };
+// Editable Manufacturing_Reference tab: rows grouped by Section.
+export type RefRow = { section: string; item: string; value: string; detail: string; colour: string };
+
 // A line item inside an NDT batch (NDT_Batch_Contents tab).
 export type BatchContent = {
   timestamp: string | null;
@@ -373,5 +378,24 @@ export const api = {
   async batchContents(): Promise<{ items: BatchContent[] }> {
     if (MODE === "gviz") return { items: (await gvizTab("NDT_Batch_Contents")).map(mapBatchContentRow).filter((c) => c.batch_qr) };
     return getJson<{ items: BatchContent[] }>("batchContents");
+  },
+  async manufacturableLengths(): Promise<{ items: ManufacturableLength[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Manufacturable_Lengths")).map((r) => ({
+        line: r["Production_Line"] ?? "", length_display: r["Length_Display"] ?? "",
+        length_numeric: toNum(r["Length_Numeric"]), active: /true/i.test(r["Active"] ?? ""),
+      })).filter((l) => l.line) };
+      return await getJson<{ items: ManufacturableLength[] }>("manufacturableLengths");
+    } catch { return { items: [] }; }
+  },
+  // Manufacturing_Reference is a tab the team creates — tolerate its absence.
+  async manufacturingReference(): Promise<{ items: RefRow[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Manufacturing_Reference")).map((r) => ({
+        section: r["Section"] ?? "", item: r["Item"] ?? "", value: r["Value"] ?? "",
+        detail: r["Detail"] ?? "", colour: r["Colour"] ?? "",
+      })).filter((r) => r.section) };
+      return await getJson<{ items: RefRow[] }>("manufacturingReference");
+    } catch { return { items: [] }; }
   },
 };

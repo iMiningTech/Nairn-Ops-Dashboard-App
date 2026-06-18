@@ -271,7 +271,7 @@ export function lastT1Destruction(txns: Transaction[]): T1Destruction {
 // locations like the Maintenance Room are deliberately excluded), a per-row total
 // (the description's quantity across the shown rooms) + column + grand totals.
 // Active stock only.
-export const SITE_ROOMS = ["Magazine M1", "Magazine M2", "Sea Can 6", "Sea Can 7", "Component Room", "E-board Room", "DAB-16A", "NDT Room"] as const;
+export const SITE_ROOMS = ["Magazine M1", "Magazine M2", "Sea Can 6", "Sea Can 7", "Component Room", "Warehouse Room 17", "E-board Room", "DAB-16A", "NDT Room"] as const;
 
 export type MatrixRow = { description: string; cells: Record<string, number>; total: number; family: string | null };
 // Display/sort order for finished-good product families.
