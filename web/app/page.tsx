@@ -182,8 +182,8 @@ export default function Dashboard() {
 
   const lastUpdated = useMemo(() => maxDate(items.map((i) => i.last_updated_at)) || generatedAt, [items, generatedAt]);
   const headerTitle = VIEWS.find((v) => v.id === view)?.label ?? "Overview";
-  // Finished-goods-only role sees just that tab.
-  const navViews = role === "fg" ? VIEWS.filter((v) => v.id === "finished") : VIEWS;
+  // Finished-goods-only role sees just that tab + the Capabilities cheat sheet.
+  const navViews = role === "fg" ? VIEWS.filter((v) => v.id === "finished" || v.id === "capabilities") : VIEWS;
 
   if (!role) return <AccessGate onUnlock={(r) => { setRole(r); if (r === "fg") setView("finished"); }} />;
 
@@ -1364,14 +1364,16 @@ function MaintenanceView({ items }: { items: InventoryItem[] }) {
 // ── Capabilities (manufacturing cheat sheet) — printable ─────────────────────
 function CapabilitiesView({ lengths, reference }: { lengths: ManufacturableLength[]; reference: RefRow[] }) {
   // Lengths each line can make, from Manufacturable_Lengths (Active only).
+  const toFeet = (m: number) => (m * 3.28084).toFixed(1);
   const byLine = useMemo(() => {
-    const m = new Map<string, string[]>();
+    const m = new Map<string, { display: string; m: number }[]>();
     for (const l of lengths) {
       if (!l.active) continue;
+      const meters = l.length_numeric || parseFloat(l.length_display) || 0;
       if (!m.has(l.line)) m.set(l.line, []);
-      m.get(l.line)!.push(l.length_display);
+      m.get(l.line)!.push({ display: l.length_display, m: meters });
     }
-    return Array.from(m, ([line, lens]) => ({ line, lens }));
+    return Array.from(m, ([line, rows]) => ({ line, rows: rows.sort((a, b) => a.m - b.m) }));
   }, [lengths]);
 
   // Reference rows grouped by Section, preserving sheet order.
@@ -1396,12 +1398,22 @@ function CapabilitiesView({ lengths, reference }: { lengths: ManufacturableLengt
         <div className="mb-3 text-sm font-semibold text-fg">Lengths each line can produce</div>
         {byLine.length ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {byLine.map(({ line, lens }) => (
-              <div key={line} className="rounded-xl border border-border p-3">
-                <div className="mb-2 font-semibold text-fg">{line}</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {lens.map((l) => <span key={l} className="rounded-lg border border-border bg-bg px-2 py-1 text-xs">{l}</span>)}
-                </div>
+            {byLine.map(({ line, rows }) => (
+              <div key={line} className="overflow-hidden rounded-xl border border-border">
+                <div className="border-b border-border bg-bg px-3 py-2 font-semibold text-fg">{line}</div>
+                <table className="w-full text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-muted">
+                    <tr><th className="px-3 py-1.5 text-left font-medium">Metres</th><th className="px-3 py-1.5 text-left font-medium">Feet</th></tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={i} className="border-t border-border">
+                        <td className="px-3 py-1.5 tabular-nums text-fg">{r.m} m</td>
+                        <td className="px-3 py-1.5 tabular-nums text-muted">{toFeet(r.m)} ft</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             ))}
           </div>
