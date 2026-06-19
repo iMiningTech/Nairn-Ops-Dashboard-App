@@ -272,7 +272,7 @@ export default function Dashboard() {
               {view === "financial" && <FinancialLookupView items={items} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
-              {view === "bol" && <BolView items={items} />}
+              {view === "bol" && <BolView items={items} txns={txns} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}

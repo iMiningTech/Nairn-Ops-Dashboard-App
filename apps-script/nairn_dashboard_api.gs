@@ -54,11 +54,73 @@ function doGet(e) {
       case 'batchContents': return _json(batchContents_());
       case 'manufacturableLengths': return _json(manufacturableLengths_());
       case 'manufacturingReference': return _json(manufacturingReference_());
-      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference'] });
+      case 'bols':          return _json(bols_());
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
   }
+}
+
+// ── Write-back: Bill of Lading register ──────────────────────────────────────
+// POSTed from the dashboard as text/plain JSON {action:'createBol', ...}.
+function doPost(e) {
+  try {
+    if (API_TOKEN && (!e.parameter || e.parameter.token !== API_TOKEN)) return _json({ error: 'unauthorized' });
+    var body = {};
+    try { body = JSON.parse(e.postData.contents); } catch (_) { return _json({ error: 'bad request body' }); }
+    if (body.action === 'createBol') return _json(createBol_(body));
+    return _json({ error: 'unknown action' });
+  } catch (err) {
+    return _json({ error: String(err && err.message || err) });
+  }
+}
+
+var BOL_HEADERS = ['BOL_No', 'Created_At', 'Created_By', 'Date', 'Ship_From', 'Ship_To', 'Truck', 'Trailer',
+  'Consignor_Name', 'Driver_Name', 'Total_Packages', 'Total_Quantity', 'Total_NEQ_kg', 'Include_NEQ',
+  'Classes', 'Box_QRs', 'Lines_JSON', 'Status'];
+
+function createBol_(b) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);   // serialise so two issues never collide on a number
+  try {
+    var ss = _ss();
+    var sh = ss.getSheetByName('BOL_Register');
+    if (!sh) { sh = ss.insertSheet('BOL_Register'); sh.appendRow(BOL_HEADERS); }
+    var tz = ss.getSpreadsheetTimeZone();
+    var year = Utilities.formatDate(new Date(), tz, 'yyyy');
+    // Next sequence for this year.
+    var data = sh.getDataRange().getValues();
+    var max = 0, re = new RegExp('^BOL-' + year + '-(\\d+)$');
+    for (var i = 1; i < data.length; i++) {
+      var m = String(data[i][0] || '').match(re);
+      if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+    }
+    var bolNo = 'BOL-' + year + '-' + ('0000' + (max + 1)).slice(-4);
+    var createdAt = Utilities.formatDate(new Date(), tz, 'M/d/yyyy H:mm:ss');
+    sh.appendRow([bolNo, createdAt, b.created_by || '', b.date || '', b.ship_from || '', b.ship_to || '',
+      b.truck || '', b.trailer || '', b.consignor || '', b.driver || '',
+      b.total_packages || 0, b.total_quantity || 0, b.total_neq_kg || 0, b.include_neq ? 'TRUE' : 'FALSE',
+      b.classes || '', b.box_qrs || '', b.lines_json || '', 'Issued']);
+    return { bol_no: bolNo, created_at: createdAt };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function bols_() {
+  if (!_ss().getSheetByName('BOL_Register')) return { items: [] };
+  var rows = readTab_('BOL_Register');
+  var items = rows.map(function (r) {
+    return { bol_no: str_(r['BOL_No']), created_at: localTs_(r['Created_At']), created_by: str_(r['Created_By']),
+      date: str_(r['Date']), ship_from: str_(r['Ship_From']), ship_to: str_(r['Ship_To']),
+      truck: str_(r['Truck']), trailer: str_(r['Trailer']), consignor_name: str_(r['Consignor_Name']),
+      driver_name: str_(r['Driver_Name']), total_packages: num_(r['Total_Packages']),
+      total_quantity: num_(r['Total_Quantity']), total_neq_kg: num_(r['Total_NEQ_kg']),
+      include_neq: /true/i.test(String(r['Include_NEQ'])), classes: str_(r['Classes']),
+      box_qrs: str_(r['Box_QRs']), lines_json: str_(r['Lines_JSON']), status: str_(r['Status']) };
+  }).filter(function (b) { return b.bol_no; });
+  return { items: items };
 }
 
 // ── Endpoints ────────────────────────────────────────────────────────────────

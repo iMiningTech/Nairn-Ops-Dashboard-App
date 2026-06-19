@@ -17,6 +17,9 @@
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/$/, "");
 const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
+// Apps Script /exec URL for the BOL register (the one write-back). When unset,
+// BOL registration is disabled and the UI stays on draft numbers.
+const BOL_API = (process.env.NEXT_PUBLIC_BOL_API || "").trim();
 const SHEET_ID = process.env.NEXT_PUBLIC_SHEET_ID || "15eiq1d-w5av0JIf1u_x4kPAhUiDU_wJIMd3JgmQOxPM";
 const MODE = (process.env.NEXT_PUBLIC_DATA_MODE || (API_BASE ? "appsscript" : "gviz")).toLowerCase();
 
@@ -124,6 +127,15 @@ export type Decon = { at: string; line: string; hmx_spill: boolean };
 export type ManufacturableLength = { line: string; length_display: string; length_numeric: number; active: boolean };
 // Editable Manufacturing_Reference tab: rows grouped by Section.
 export type RefRow = { section: string; item: string; value: string; detail: string; colour: string };
+
+// An issued Bill of Lading, from the BOL_Register tab (immutable once written).
+export type IssuedBol = {
+  bol_no: string; created_at: string; created_by: string; date: string;
+  ship_from: string; ship_to: string; truck: string; trailer: string;
+  consignor_name: string; driver_name: string;
+  total_packages: number; total_quantity: number; total_neq_kg: number;
+  include_neq: boolean; classes: string; box_qrs: string; lines_json: string; status: string;
+};
 
 // A line item inside an NDT batch (NDT_Batch_Contents tab).
 export type BatchContent = {
@@ -298,6 +310,18 @@ function mapTargetRow(r: Record<string, string>): DailyTarget {
   };
 }
 
+function mapIssuedBol(r: Record<string, string>): IssuedBol {
+  return {
+    bol_no: r["BOL_No"] ?? "", created_at: r["Created_At"] ?? "", created_by: r["Created_By"] ?? "",
+    date: r["Date"] ?? "", ship_from: r["Ship_From"] ?? "", ship_to: r["Ship_To"] ?? "",
+    truck: r["Truck"] ?? "", trailer: r["Trailer"] ?? "", consignor_name: r["Consignor_Name"] ?? "",
+    driver_name: r["Driver_Name"] ?? "", total_packages: toNum(r["Total_Packages"]),
+    total_quantity: toNum(r["Total_Quantity"]), total_neq_kg: toNum(r["Total_NEQ_kg"]),
+    include_neq: /true/i.test(r["Include_NEQ"] ?? ""), classes: r["Classes"] ?? "",
+    box_qrs: r["Box_QRs"] ?? "", lines_json: r["Lines_JSON"] ?? "", status: r["Status"] ?? "",
+  };
+}
+
 function mapBatchContentRow(r: Record<string, string>): BatchContent {
   return {
     timestamp: orNull(r["Timestamp"] ?? ""),
@@ -396,6 +420,23 @@ export const api = {
         detail: r["Detail"] ?? "", colour: r["Colour"] ?? "",
       })).filter((r) => r.section) };
       return await getJson<{ items: RefRow[] }>("manufacturingReference");
+    } catch { return { items: [] }; }
+  },
+
+  // ── Bill of Lading register (write-back) ───────────────────────────────────
+  bolEnabled: !!BOL_API,
+  async registerBol(payload: Record<string, unknown>): Promise<{ bol_no: string; created_at: string }> {
+    if (!BOL_API) throw new Error("BOL register not configured (set NEXT_PUBLIC_BOL_API).");
+    // text/plain avoids a CORS preflight Apps Script can't answer.
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "createBol", ...payload }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
+  async bols(): Promise<{ items: IssuedBol[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("BOL_Register")).map(mapIssuedBol).filter((b) => b.bol_no) };
+      return await getJson<{ items: IssuedBol[] }>("bols");
     } catch { return { items: [] }; }
   },
 };

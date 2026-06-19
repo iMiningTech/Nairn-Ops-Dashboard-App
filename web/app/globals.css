@@ -58,11 +58,13 @@ html, body {
 .bol-overlay { position: fixed; inset: 0; z-index: 50; overflow: auto; background: #52555b; }
 .bol-doc {
   --line: #111; --accent: #E2231A; --muted: #5b5b5b; --soft: #f3f4f6;
-  width: 210mm; min-height: 297mm; margin: 18px auto; background: #fff; color: #111;
+  width: 210mm; margin: 18px auto; background: #fff; color: #111;
   padding: 11mm; box-shadow: 0 6px 30px rgba(0,0,0,.45);
   font-family: "Helvetica Neue", Arial, "Segoe UI", system-ui, sans-serif;
   -webkit-print-color-adjust: exact; print-color-adjust: exact;
 }
+/* Full-page height is a SCREEN affordance only — must not affect print. */
+@media screen { .bol-doc { min-height: 297mm; } }
 .bol-doc .titlebar { text-align: center; font-size: 19px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding-bottom: 8px; border-bottom: 3px solid var(--accent); line-height: 1.1; }
 .bol-doc .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding: 12px 0; }
 .bol-doc .brand { display: flex; gap: 18px; align-items: center; }
@@ -123,7 +125,16 @@ html, body {
 .bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
 
 @media print {
+  html, body.bol-open { height: auto !important; min-height: 0 !important; }
   body.bol-open .app-shell { display: none !important; }
-  body.bol-open .bol-overlay { position: static; overflow: visible; background: #fff; }
-  body.bol-open .bol-doc { box-shadow: none; margin: 0; width: auto; min-height: auto; padding: 0; }
+  body.bol-open .bol-overlay {
+    position: static !important; inset: auto !important; overflow: visible !important;
+    height: auto !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; background: #fff !important;
+  }
+  body.bol-open .bol-doc {
+    box-shadow: none !important; margin: 0 !important; width: auto !important;
+    height: auto !important; min-height: 0 !important; max-height: none !important; padding: 0 !important; overflow: hidden !important;
+  }
+  body.bol-open .bol-doc .brand img { height: 140px; }   /* headroom */
+  @page { size: A4; margin: 10mm; }
 }
