@@ -5,7 +5,7 @@ import Image from "next/image";
 import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
   CheckCircle2, Search, Download, Factory, ArrowRightLeft, Target, PackageCheck, Flame, ShieldCheck,
-  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer,
+  CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
 } from "lucide-react";
 import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
@@ -25,6 +25,7 @@ import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/ope
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange } from "@/lib/destruction";
+import { BolView } from "@/components/bol-view";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz } from "@/lib/utils";
 
@@ -41,6 +42,7 @@ const VIEWS = [
   { id: "financial", label: "Financial Lookup", icon: Hash },
   { id: "destruction", label: "Destruction & Waste", icon: Trash2 },
   { id: "sales", label: "Sales History", icon: Receipt },
+  { id: "bol", label: "Bill of Lading", icon: FileText },
   { id: "stock", label: "Filtered Inventory", icon: Search },
   { id: "recon", label: "Reconciliation", icon: Scale },
   { id: "maint", label: "Maintenance Stores", icon: Wrench },
@@ -188,7 +190,7 @@ export default function Dashboard() {
   if (!role) return <AccessGate onUnlock={(r) => { setRole(r); if (r === "fg") setView("finished"); }} />;
 
   return (
-    <div className={`flex h-screen overflow-hidden ${tv ? "tv-mode" : ""}`}>
+    <div className={`app-shell flex h-screen overflow-hidden ${tv ? "tv-mode" : ""}`}>
       {!tv && (
         <aside className="hidden w-60 shrink-0 flex-col bg-sidebar text-sidebarfg md:flex">
           <div className="flex h-16 items-center px-5">
@@ -270,6 +272,7 @@ export default function Dashboard() {
               {view === "financial" && <FinancialLookupView items={items} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
+              {view === "bol" && <BolView items={items} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}

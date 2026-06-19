@@ -51,3 +51,79 @@ html, body {
   .print-card { break-inside: avoid; }
   @page { size: A4; margin: 14mm; }
 }
+
+/* ── Bill of Lading document (printable) ─────────────────────────────────────
+   Self-contained styles (explicit colours, not theme tokens) so the document
+   prints identically regardless of app theme. */
+.bol-overlay { position: fixed; inset: 0; z-index: 50; overflow: auto; background: #52555b; }
+.bol-doc {
+  --line: #111; --accent: #E2231A; --muted: #5b5b5b; --soft: #f3f4f6;
+  width: 210mm; min-height: 297mm; margin: 18px auto; background: #fff; color: #111;
+  padding: 11mm; box-shadow: 0 6px 30px rgba(0,0,0,.45);
+  font-family: "Helvetica Neue", Arial, "Segoe UI", system-ui, sans-serif;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.bol-doc .titlebar { text-align: center; font-size: 19px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding-bottom: 8px; border-bottom: 3px solid var(--accent); line-height: 1.1; }
+.bol-doc .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding: 12px 0; }
+.bol-doc .brand { display: flex; gap: 18px; align-items: center; }
+.bol-doc .brand img { height: 184px; width: auto; display: block; }
+.bol-doc .co { font-size: 12px; line-height: 1.45; }
+.bol-doc .co b { font-size: 13.5px; }
+.bol-doc .co .grp { color: var(--accent); font-weight: 800; letter-spacing: .06em; text-transform: uppercase; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; margin-bottom: 3px; }
+.bol-doc .doc { text-align: right; min-width: 60mm; }
+.bol-doc .doc .f { display: flex; justify-content: flex-end; gap: 8px; align-items: baseline; font-size: 12px; margin-top: 6px; }
+.bol-doc .doc .f .k { color: var(--muted); }
+.bol-doc .doc .f .v { border-bottom: 1px solid var(--line); min-width: 42mm; text-align: left; padding: 1px 6px; font-weight: 700; }
+.bol-doc .parties { display: grid; grid-template-columns: 1.7fr 1fr; border: 1px solid var(--line); }
+.bol-doc .parties .col { display: flex; flex-direction: column; }
+.bol-doc .parties .col + .col { border-left: 1px solid var(--line); }
+.bol-doc .field { padding: 6px 9px; }
+.bol-doc .field + .field { border-top: 1px solid var(--line); }
+.bol-doc .field .lbl { display: block; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 3px; }
+.bol-doc .field .box { font-weight: 600; font-size: 13px; white-space: pre-wrap; }
+.bol-doc .field .box.addr { min-height: 46px; }
+.bol-doc .field .box.mid { min-height: 24px; }
+.bol-doc table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10.5px; }
+.bol-doc caption { caption-side: top; text-align: left; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 700; padding: 0 0 4px; }
+.bol-doc th, .bol-doc td { border: 1px solid var(--line); padding: 4px 6px; vertical-align: middle; }
+.bol-doc thead th { background: var(--soft); font-size: 8.5px; text-transform: uppercase; letter-spacing: .03em; text-align: left; font-weight: 700; }
+.bol-doc thead th.num { text-align: center; }
+.bol-doc td.un { font-weight: 700; white-space: nowrap; }
+.bol-doc td.cls { text-align: center; }
+.bol-doc td.pg { text-align: center; }
+.bol-doc td.n { text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+.bol-doc .cls-badge { display: inline-block; border: 1.5px solid var(--accent); color: var(--accent); border-radius: 3px; padding: 0 4px; font-weight: 800; }
+.bol-doc tr.empty td { height: 21px; }
+.bol-doc .footrow { display: grid; grid-template-columns: 1fr .9fr; border: 1px solid var(--line); border-top: 0; }
+.bol-doc .footrow .box2 { padding: 8px 9px; }
+.bol-doc .footrow .box2 + .box2 { border-left: 1px solid var(--line); }
+.bol-doc .placards .ttl { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 8px; }
+.bol-doc .pk { display: inline-flex; align-items: center; gap: 6px; margin-right: 18px; font-weight: 700; font-size: 12px; }
+.bol-doc .chk { width: 15px; height: 15px; border: 1.5px solid var(--line); display: inline-grid; place-items: center; font-size: 11px; line-height: 1; }
+.bol-doc .chk.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.bol-doc .totals { display: flex; justify-content: space-between; gap: 8px; }
+.bol-doc .totals .t { flex: 1; text-align: center; }
+.bol-doc .totals .t .tk { font-size: 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.bol-doc .totals .t .tv { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.bol-doc .totals .t.opt .tv { font-size: 15px; color: var(--muted); font-weight: 700; }
+.bol-doc .erap { border: 1px solid var(--line); border-top: 0; padding: 8px 10px; font-size: 10px; line-height: 1.5; display: flex; justify-content: space-between; gap: 16px; }
+.bol-doc .erap b { color: var(--accent); }
+.bol-doc .erap .ref { text-align: right; white-space: nowrap; }
+.bol-doc .cert { border: 1px solid var(--line); border-top: 0; padding: 8px 10px; }
+.bol-doc .cert .h { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); font-weight: 800; margin-bottom: 4px; }
+.bol-doc .cert p { margin: 0; font-size: 9.5px; line-height: 1.45; font-style: italic; color: #222; }
+.bol-doc .signs { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-top: 0; }
+.bol-doc .signs .s { padding: 10px; }
+.bol-doc .signs .s + .s { border-left: 1px solid var(--line); }
+.bol-doc .signs .role { font-size: 8.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.bol-doc .sigline { display: flex; gap: 10px; margin-top: 14px; font-size: 10px; }
+.bol-doc .sigline .l { flex: 1; }
+.bol-doc .sigline .cap { font-size: 9px; color: var(--muted); margin-bottom: 2px; }
+.bol-doc .sigline .u { border-bottom: 1px solid var(--line); height: 17px; white-space: pre-wrap; font-weight: 600; }
+.bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
+
+@media print {
+  body.bol-open .app-shell { display: none !important; }
+  body.bol-open .bol-overlay { position: static; overflow: visible; background: #fff; }
+  body.bol-open .bol-doc { box-shadow: none; margin: 0; width: auto; min-height: auto; padding: 0; }
+}
