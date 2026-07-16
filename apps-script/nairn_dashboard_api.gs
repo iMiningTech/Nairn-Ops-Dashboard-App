@@ -55,7 +55,8 @@ function doGet(e) {
       case 'manufacturableLengths': return _json(manufacturableLengths_());
       case 'manufacturingReference': return _json(manufacturingReference_());
       case 'bols':          return _json(bols_());
-      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols'] });
+      case 'signatures':    return _json(signatures_());
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'signatures'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -78,7 +79,7 @@ function doPost(e) {
 
 var BOL_HEADERS = ['BOL_No', 'Created_At', 'Created_By', 'Date', 'Ship_From', 'Ship_To', 'Truck', 'Trailer',
   'Consignor_Name', 'Driver_Name', 'Total_Packages', 'Total_Quantity', 'Total_NEQ_kg', 'Include_NEQ',
-  'Classes', 'Box_QRs', 'Lines_JSON', 'Status'];
+  'Classes', 'Box_QRs', 'Lines_JSON', 'Status', 'Signature_URL'];
 
 function createBol_(b) {
   var lock = LockService.getScriptLock();
@@ -101,7 +102,7 @@ function createBol_(b) {
     sh.appendRow([bolNo, createdAt, b.created_by || '', b.date || '', b.ship_from || '', b.ship_to || '',
       b.truck || '', b.trailer || '', b.consignor || '', b.driver || '',
       b.total_packages || 0, b.total_quantity || 0, b.total_neq_kg || 0, b.include_neq ? 'TRUE' : 'FALSE',
-      b.classes || '', b.box_qrs || '', b.lines_json || '', 'Issued']);
+      b.classes || '', b.box_qrs || '', b.lines_json || '', 'Issued', b.signature_url || '']);
     return { bol_no: bolNo, created_at: createdAt };
   } finally {
     lock.releaseLock();
@@ -118,8 +119,24 @@ function bols_() {
       driver_name: str_(r['Driver_Name']), total_packages: num_(r['Total_Packages']),
       total_quantity: num_(r['Total_Quantity']), total_neq_kg: num_(r['Total_NEQ_kg']),
       include_neq: /true/i.test(String(r['Include_NEQ'])), classes: str_(r['Classes']),
-      box_qrs: str_(r['Box_QRs']), lines_json: str_(r['Lines_JSON']), status: str_(r['Status']) };
+      box_qrs: str_(r['Box_QRs']), lines_json: str_(r['Lines_JSON']), status: str_(r['Status']),
+      signature_url: str_(r['Signature_URL']) };
   }).filter(function (b) { return b.bol_no; });
+  return { items: items };
+}
+
+// Captured receiver signatures (Signatures tab, written by the scanner app).
+// Absent tab → []. The Drive_URL serves the transparent PNG directly.
+function signatures_() {
+  if (!_ss().getSheetByName('Signatures')) return { items: [] };
+  var rows = readTab_('Signatures');
+  var items = rows.map(function (r) {
+    var id = str_(r['Drive_File_ID']);
+    var url = str_(r['Drive_URL']) || (id ? 'https://drive.google.com/uc?id=' + id + '&export=view' : '');
+    return { timestamp: localTs_(r['Timestamp']), po_number: str_(r['PO_Number']),
+             receiver_name: str_(r['Receiver_Name']), drive_file_id: id, drive_url: url,
+             operator: str_(r['Operator']), item_count: num_(r['Item_Count']) };
+  }).filter(function (s) { return s.po_number; });
   return { items: items };
 }
 

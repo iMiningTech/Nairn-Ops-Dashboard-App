@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Printer, X, FileText, AlertTriangle, RotateCcw } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type IssuedBol } from "@/lib/api";
+import { Printer, X, FileText, AlertTriangle, RotateCcw, PenLine } from "lucide-react";
+import { api, type InventoryItem, type Transaction, type IssuedBol, type Signature } from "@/lib/api";
 import { buildBol, draftBolNumber, type Bol, type BolLine } from "@/lib/bol";
 import { Card, CardBody, Stat } from "@/components/ui";
 import { fmtNum, fmtDate, fmtTime } from "@/lib/utils";
@@ -11,9 +11,11 @@ import { fmtNum, fmtDate, fmtTime } from "@/lib/utils";
 const CONSIGNOR_FROM = "Nairn Det Plant";
 
 type DocState = {
-  bol: Bol; number: string; date: string; shipTo: string; truck: string; trailer: string;
-  consignor: string; driver: string; includeNeq: boolean; qrs: string[]; issued: boolean;
+  bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string;
+  consignor: string; driver: string; signatureUrl: string; includeNeq: boolean; qrs: string[]; issued: boolean;
 };
+
+const poNorm = (s: string) => s.trim().toUpperCase();
 
 export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transaction[] }) {
   // When each box was marked Sold (set aside) — from the Status→Sold transaction.
@@ -46,8 +48,22 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     return m;
   }, [history]);
 
+  // Captured receiver signatures (Signatures tab), looked up by PO number.
+  const [signatures, setSignatures] = useState<Signature[]>([]);
+  useEffect(() => { api.signatures().then((r) => setSignatures(r.items)).catch(() => {}); }, []);
+  // Latest PO per box from PO_UPDATE transactions (field PO_Number) — matches the
+  // sales-history derivation, so a box's PO is found even when it's only in the log.
+  const poByQr = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of txns) if (t.field === "PO_Number" && t.new_value) m.set(t.qr, t.new_value);
+    return m;
+  }, [txns]);
+  const itemByQr = useMemo(() => new Map(items.map((i) => [i.qr, i])), [items]);
+  const poForQr = (qr: string) => itemByQr.get(qr)?.po_number || poByQr.get(qr) || "";
+  const poFor = (i: InventoryItem) => i.po_number || poByQr.get(i.qr) || "";
+
   const [sel, setSel] = useState<Set<string>>(new Set());
-  const [fields, setFields] = useState({ date: fmtDate(new Date().toISOString()), shipTo: "", truck: "", trailer: "", consignor: "", driver: "" });
+  const [fields, setFields] = useState({ date: fmtDate(new Date().toISOString()), shipTo: "", truck: "", trailer: "", consignor: "", driver: "", signatureUrl: "" });
   const [includeNeq, setIncludeNeq] = useState(false);
   const [doc, setDoc] = useState<DocState | null>(null);
   const [registering, setRegistering] = useState(false);
@@ -57,6 +73,20 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
   const bol = useMemo(() => buildBol(selectedBoxes), [selectedBoxes]);
   const draftNo = useMemo(() => draftBolNumber(selectedBoxes), [selectedBoxes]);
 
+  // Signatures whose PO matches a PO on the current selection. A PO can have more
+  // than one signature (split deliveries / multiple scan sessions) → show them all.
+  const matchingSigs = useMemo(() => {
+    const pos = new Set(selectedBoxes.map(poFor).filter(Boolean).map(poNorm));
+    if (!pos.size) return [];
+    return signatures.filter((s) => s.po_number && s.drive_url && pos.has(poNorm(s.po_number)))
+      .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
+  }, [selectedBoxes, signatures, poByQr]); // eslint-disable-line react-hooks/exhaustive-deps
+  const matchPos = useMemo(() => Array.from(new Set(matchingSigs.map((s) => s.po_number))), [matchingSigs]);
+
+  const applySignature = (s: Signature) =>
+    setFields((f) => ({ ...f, driver: s.receiver_name || f.driver, signatureUrl: s.drive_url }));
+  const clearSignature = () => setFields((f) => ({ ...f, signatureUrl: "" }));
+
   const toggle = (qr: string) => setSel((s) => { const n = new Set(s); n.has(qr) ? n.delete(qr) : n.add(qr); return n; });
   const toggleGroup = (boxes: InventoryItem[]) => setSel((s) => {
     const n = new Set(s); const all = boxes.every((b) => n.has(b.qr));
@@ -65,9 +95,10 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
 
   function generate() {
     const shipTo = fields.shipTo.trim() || bol.customers.join(", ");
+    const po = Array.from(new Set(selectedBoxes.map(poFor).filter(Boolean))).join(", ");
     setRegError(null);
-    setDoc({ bol, number: draftNo, date: fields.date, shipTo, truck: fields.truck, trailer: fields.trailer,
-      consignor: fields.consignor, driver: fields.driver, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false });
+    setDoc({ bol, number: draftNo, date: fields.date, po, shipTo, truck: fields.truck, trailer: fields.trailer,
+      consignor: fields.consignor, driver: fields.driver, signatureUrl: fields.signatureUrl, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false });
   }
 
   async function registerAndPrint() {
@@ -79,6 +110,7 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
         truck: doc.truck, trailer: doc.trailer, consignor: doc.consignor, driver: doc.driver, include_neq: doc.includeNeq,
         total_packages: doc.bol.totalPackages, total_quantity: doc.bol.totalQuantity, total_neq_kg: +doc.bol.totalNemKg.toFixed(3),
         classes: doc.bol.classes.join(", "), box_qrs: doc.qrs.join(","), lines_json: JSON.stringify(doc.bol.lines),
+        signature_url: doc.signatureUrl,
       });
       setDoc((d) => (d ? { ...d, number: r.bol_no, issued: true } : d));
       setSel(new Set());
@@ -94,8 +126,10 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     try { lines = JSON.parse(r.lines_json || "[]"); } catch { /* ignore */ }
     const bolObj: Bol = { lines, totalPackages: r.total_packages, totalQuantity: r.total_quantity, totalNemKg: r.total_neq_kg,
       classes: r.classes.split(",").map((s) => s.trim()).filter(Boolean), customers: [] };
-    setDoc({ bol: bolObj, number: r.bol_no, date: r.date, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
-      consignor: r.consignor_name, driver: r.driver_name, includeNeq: r.include_neq, qrs: r.box_qrs.split(","), issued: true });
+    const qrs = r.box_qrs.split(",").map((s) => s.trim()).filter(Boolean);
+    const po = Array.from(new Set(qrs.map(poForQr).filter(Boolean))).join(", ");
+    setDoc({ bol: bolObj, number: r.bol_no, date: r.date, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
+      consignor: r.consignor_name, driver: r.driver_name, signatureUrl: r.signature_url, includeNeq: r.include_neq, qrs, issued: true });
   }
 
   // Body flag for print isolation + filename via document.title.
@@ -124,6 +158,39 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
       {bol.customers.length > 1 && (
         <Card className="border-t-4 border-t-warn"><CardBody>
           <div className="flex items-center gap-2 text-sm font-semibold text-warn"><AlertTriangle size={16} /> Selection spans {bol.customers.length} customers — a BOL is normally one consignee.</div>
+        </CardBody></Card>
+      )}
+
+      {matchingSigs.length > 0 && (
+        <Card className="border-t-4 border-t-accent"><CardBody>
+          <div className="flex items-start gap-2">
+            <PenLine size={16} className="mt-0.5 shrink-0 text-accent" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-fg">
+                A receiver signature was captured for PO {matchPos.join(", ")} — auto-fill the receiver name and signature?
+              </div>
+              <div className="mt-2 space-y-2">
+                {matchingSigs.map((s) => {
+                  const active = fields.signatureUrl === s.drive_url;
+                  return (
+                    <div key={s.drive_file_id || s.timestamp} className="flex items-center gap-3 rounded-lg border border-border p-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={s.drive_url} alt="Captured signature" className="h-10 w-24 shrink-0 rounded bg-[#f3f4f6] object-contain" />
+                      <div className="min-w-0 flex-1 text-xs">
+                        <div className="truncate font-medium text-fg">{s.receiver_name || "(no name recorded)"}</div>
+                        <div className="text-muted">PO {s.po_number} · {fmtTime(s.timestamp)}{s.operator ? ` · ${s.operator}` : ""}{s.item_count ? ` · ${fmtNum(s.item_count)} item(s)` : ""}</div>
+                      </div>
+                      {active ? (
+                        <button onClick={clearSignature} className="shrink-0 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted hover:bg-bg">Attached ✓ · Remove</button>
+                      ) : (
+                        <button onClick={() => applySignature(s)} className="shrink-0 rounded-lg bg-accent px-2 py-1 text-xs font-semibold text-white">Auto-fill</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </CardBody></Card>
       )}
 
@@ -174,7 +241,15 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
             <Field label="Truck #" value={fields.truck} onChange={(v) => setFields((f) => ({ ...f, truck: v }))} />
             <Field label="Trailer #" value={fields.trailer} onChange={(v) => setFields((f) => ({ ...f, trailer: v }))} />
             <Field label="Consignor name" value={fields.consignor} onChange={(v) => setFields((f) => ({ ...f, consignor: v }))} />
-            <Field label="Driver name" value={fields.driver} onChange={(v) => setFields((f) => ({ ...f, driver: v }))} />
+            <Field label="Driver / carrier / consignee name" value={fields.driver} onChange={(v) => setFields((f) => ({ ...f, driver: v }))} />
+            {fields.signatureUrl && (
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1 text-xs text-muted">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={fields.signatureUrl} alt="Attached signature" className="h-6 w-16 shrink-0 object-contain" />
+                <span className="flex-1">Signature attached</span>
+                <button onClick={clearSignature} className="underline hover:text-fg">clear</button>
+              </div>
+            )}
             <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs text-muted">
               <input type="checkbox" checked={includeNeq} onChange={(e) => setIncludeNeq(e.target.checked)} /> include Total NEQ on the document
             </label>
@@ -241,7 +316,7 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
               <button onClick={() => setDoc(null)} className="flex items-center gap-1 rounded-lg border border-white/30 px-3 py-1.5"><X size={15} /> Close</button>
             </span>
           </div>
-          <BolDocument bol={doc.bol} number={doc.number} date={doc.date} shipTo={doc.shipTo} truck={doc.truck} trailer={doc.trailer} consignor={doc.consignor} driver={doc.driver} includeNeq={doc.includeNeq} />
+          <BolDocument bol={doc.bol} number={doc.number} date={doc.date} po={doc.po} shipTo={doc.shipTo} truck={doc.truck} trailer={doc.trailer} consignor={doc.consignor} driver={doc.driver} signatureUrl={doc.signatureUrl} includeNeq={doc.includeNeq} />
         </div>,
         document.body
       )}
@@ -258,8 +333,8 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
   );
 }
 
-function BolDocument({ bol, number, date, shipTo, truck, trailer, consignor, driver, includeNeq }:
-  { bol: Bol; number: string; date: string; shipTo: string; truck: string; trailer: string; consignor: string; driver: string; includeNeq: boolean }) {
+function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor, driver, signatureUrl, includeNeq }:
+  { bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string; consignor: string; driver: string; signatureUrl: string; includeNeq: boolean }) {
   const placard = (c: string) => bol.classes.includes(c);
   return (
     <div className="bol-doc">
@@ -280,6 +355,7 @@ function BolDocument({ bol, number, date, shipTo, truck, trailer, consignor, dri
         <div className="doc">
           <div className="f"><span className="k">Date</span><span className="v">{date}</span></div>
           <div className="f"><span className="k">BOL No.</span><span className="v">{number.startsWith("DRAFT") ? <span className="draft-stamp">{number}</span> : number}</span></div>
+          {po && <div className="f"><span className="k">PO No.</span><span className="v">{po}</span></div>}
         </div>
       </div>
 
@@ -356,9 +432,20 @@ function BolDocument({ bol, number, date, shipTo, truck, trailer, consignor, dri
           <div className="sigline"><div className="l"><div className="cap">Signature</div><div className="u"></div></div><div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u"></div></div></div>
         </div>
         <div className="s">
-          <div className="role">Driver / carrier</div>
-          <div className="sigline"><div className="l"><div className="cap">Driver name</div><div className="u">{driver}</div></div></div>
-          <div className="sigline"><div className="l"><div className="cap">Signature</div><div className="u"></div></div><div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u"></div></div></div>
+          <div className="role">Driver / carrier / consignee</div>
+          <div className="sigline"><div className="l"><div className="cap">Name</div><div className="u">{driver}</div></div></div>
+          <div className="sigline">
+            <div className="l">
+              <div className="cap">Signature</div>
+              {signatureUrl ? (
+                <div className="u sig">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="sig-img" src={signatureUrl} alt="Receiver signature" />
+                </div>
+              ) : <div className="u"></div>}
+            </div>
+            <div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u"></div></div>
+          </div>
         </div>
       </div>
     </div>

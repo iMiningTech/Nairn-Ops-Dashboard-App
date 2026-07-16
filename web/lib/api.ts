@@ -135,6 +135,21 @@ export type IssuedBol = {
   consignor_name: string; driver_name: string;
   total_packages: number; total_quantity: number; total_neq_kg: number;
   include_neq: boolean; classes: string; box_qrs: string; lines_json: string; status: string;
+  signature_url: string;   // captured receiver signature (embedded on reprint)
+};
+
+// A captured receiver signature, from the Signatures tab. Written automatically
+// by the BlastStock scanner app when an operator completes a bulk sale with a
+// signature. Looked up by PO_Number when building a BOL. The Drive_URL serves
+// the transparent PNG directly (publicly, no auth) for use as an <img> src.
+export type Signature = {
+  timestamp: string;
+  po_number: string;
+  receiver_name: string;
+  drive_file_id: string;
+  drive_url: string;
+  operator: string;
+  item_count: number;
 };
 
 // A line item inside an NDT batch (NDT_Batch_Contents tab).
@@ -319,6 +334,22 @@ function mapIssuedBol(r: Record<string, string>): IssuedBol {
     total_quantity: toNum(r["Total_Quantity"]), total_neq_kg: toNum(r["Total_NEQ_kg"]),
     include_neq: /true/i.test(r["Include_NEQ"] ?? ""), classes: r["Classes"] ?? "",
     box_qrs: r["Box_QRs"] ?? "", lines_json: r["Lines_JSON"] ?? "", status: r["Status"] ?? "",
+    signature_url: r["Signature_URL"] ?? "",
+  };
+}
+
+function mapSignatureRow(r: Record<string, string>): Signature {
+  const id = r["Drive_File_ID"] ?? "";
+  // Prefer the sheet's Drive_URL; fall back to the canonical direct-view URL.
+  const url = (r["Drive_URL"] ?? "").trim() || (id ? `https://drive.google.com/uc?id=${id}&export=view` : "");
+  return {
+    timestamp: r["Timestamp"] ?? "",
+    po_number: r["PO_Number"] ?? "",
+    receiver_name: r["Receiver_Name"] ?? "",
+    drive_file_id: id,
+    drive_url: url,
+    operator: r["Operator"] ?? "",
+    item_count: toNum(r["Item_Count"]),
   };
 }
 
@@ -437,6 +468,13 @@ export const api = {
     try {
       if (MODE === "gviz") return { items: (await gvizTab("BOL_Register")).map(mapIssuedBol).filter((b) => b.bol_no) };
       return await getJson<{ items: IssuedBol[] }>("bols");
+    } catch { return { items: [] }; }
+  },
+  // Captured receiver signatures (Signatures tab). Tolerate the tab's absence.
+  async signatures(): Promise<{ items: Signature[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Signatures")).map(mapSignatureRow).filter((s) => s.po_number) };
+      return await getJson<{ items: Signature[] }>("signatures");
     } catch { return { items: [] }; }
   },
 };

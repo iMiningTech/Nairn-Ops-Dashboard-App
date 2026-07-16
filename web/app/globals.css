@@ -122,6 +122,9 @@ html, body {
 .bol-doc .sigline .l { flex: 1; }
 .bol-doc .sigline .cap { font-size: 9px; color: var(--muted); margin-bottom: 2px; }
 .bol-doc .sigline .u { border-bottom: 1px solid var(--line); height: 17px; white-space: pre-wrap; font-weight: 600; }
+/* Embedded receiver signature: transparent PNG sits over the signature line. */
+.bol-doc .sigline .u.sig { height: 16mm; }
+.bol-doc .sig-img { height: 100%; max-width: 100%; width: auto; object-fit: contain; object-position: left bottom; display: block; }
 .bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
 
 @media print {
