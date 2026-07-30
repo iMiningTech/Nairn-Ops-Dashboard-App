@@ -338,10 +338,18 @@ function mapIssuedBol(r: Record<string, string>): IssuedBol {
   };
 }
 
+// Extract a Drive file id from an explicit id field or any Drive URL shape.
+function driveFileId(idField: string, urlField: string): string {
+  if (idField && idField.trim()) return idField.trim();
+  const s = urlField || "";
+  const m = s.match(/\/d\/([-\w]+)/) || s.match(/[?&]id=([-\w]+)/) || s.match(/[-\w]{25,}/);
+  return m ? (m[1] || m[0]) : "";
+}
 function mapSignatureRow(r: Record<string, string>): Signature {
-  const id = r["Drive_File_ID"] ?? "";
-  // Prefer the sheet's Drive_URL; fall back to the canonical direct-view URL.
-  const url = (r["Drive_URL"] ?? "").trim() || (id ? `https://drive.google.com/uc?id=${id}&export=view` : "");
+  const id = driveFileId(r["Drive_File_ID"] ?? "", r["Drive_URL"] ?? "");
+  // Drive's thumbnail endpoint embeds reliably in <img> and prints, unlike
+  // uc?export=view (the file must be shared "anyone with link").
+  const url = id ? `https://drive.google.com/thumbnail?id=${id}&sz=w1000` : (r["Drive_URL"] ?? "").trim();
   return {
     timestamp: r["Timestamp"] ?? "",
     po_number: r["PO_Number"] ?? "",

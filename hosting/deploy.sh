@@ -6,7 +6,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROFILE="${AWS_PROFILE:-imining-dev}"
+# Production dashboard lives in account 432046692351 → profile `imining-prod`.
+# (Note: the account naming was flipped for compliance — `imining-dev` now points
+# at a different account, so do NOT use it for this deploy.)
+PROFILE="${AWS_PROFILE:-imining-prod}"
 REGION="${AWS_REGION:-us-east-1}"
 STACK="${STACK:-nairn-dashboard-prod}"
 

@@ -123,8 +123,10 @@ html, body {
 .bol-doc .sigline .cap { font-size: 9px; color: var(--muted); margin-bottom: 2px; }
 .bol-doc .sigline .u { border-bottom: 1px solid var(--line); height: 17px; white-space: pre-wrap; font-weight: 600; }
 /* Embedded receiver signature: transparent PNG sits over the signature line. */
-.bol-doc .sigline .u.sig { height: 16mm; }
-.bol-doc .sig-img { height: 100%; max-width: 100%; width: auto; object-fit: contain; object-position: left bottom; display: block; }
+/* Signature overlays the line without changing its height/position. */
+.bol-doc .sigline .u.sig { position: relative; overflow: visible; }
+.bol-doc .sig-img { position: absolute; left: 2px; bottom: 0; height: 42px; width: auto; max-width: 100%;
+  object-fit: contain; object-position: left bottom; pointer-events: none; }
 .bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
 
 @media print {

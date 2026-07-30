@@ -87,6 +87,24 @@ export function destroyedInRange(items: InventoryItem[], txns: Transaction[], co
   return { batches, direct, lineItems };
 }
 
+// Consolidated destruction report: every distinct item across the destroyed
+// batches' contents, quantities summed (grouped by item + unit).
+export type DestroyedItem = { item: string; unit: string; qty: number; batches: number; entryTypes: string };
+export function consolidateDestroyed(lineItems: BatchContent[]): DestroyedItem[] {
+  const m = new Map<string, { item: string; unit: string; qty: number; batches: Set<string>; types: Set<string> }>();
+  for (const c of lineItems) {
+    const key = `${c.item}|${c.unit}`;
+    const e = m.get(key) || { item: c.item, unit: c.unit, qty: 0, batches: new Set<string>(), types: new Set<string>() };
+    e.qty += c.quantity;
+    if (c.batch_qr) e.batches.add(c.batch_qr);
+    if (c.entry_type) e.types.add(c.entry_type);
+    m.set(key, e);
+  }
+  return Array.from(m.values())
+    .map((e) => ({ item: e.item, unit: e.unit, qty: e.qty, batches: e.batches.size, entryTypes: Array.from(e.types).join(", ") }))
+    .sort((a, b) => b.qty - a.qty);
+}
+
 export type WasteEntry = { at: string | null; batch_qr: string; line: string; item: string; qty: number; unit: string; logged_by: string };
 export function wasteInRange(contents: BatchContent[], from: string, to: string): WasteEntry[] {
   return contents

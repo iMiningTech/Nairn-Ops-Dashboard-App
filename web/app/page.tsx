@@ -24,7 +24,7 @@ import {
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary } from "@/lib/sales";
-import { awaitingDestruction, destroyedInRange, wasteInRange } from "@/lib/destruction";
+import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed } from "@/lib/destruction";
 import { BolView } from "@/components/bol-view";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz } from "@/lib/utils";
@@ -287,8 +287,9 @@ export default function Dashboard() {
 
 // ── Generic table ────────────────────────────────────────────────────────────
 type Col = { key: string; label: string; num?: boolean; fmt?: (v: unknown, row: Record<string, unknown>) => string };
-function Grid({ cols, rows, tone, maxH = "28rem" }: {
+function Grid({ cols, rows, tone, maxH = "28rem", onRowClick, activeRow }: {
   cols: Col[]; rows: Record<string, unknown>[]; tone?: (r: Record<string, unknown>) => "bad" | "warn" | undefined; maxH?: string;
+  onRowClick?: (r: Record<string, unknown>) => void; activeRow?: (r: Record<string, unknown>) => boolean;
 }) {
   return (
     <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: maxH }}>
@@ -301,9 +302,11 @@ function Grid({ cols, rows, tone, maxH = "28rem" }: {
             <tr><td colSpan={cols.length} className="px-3 py-6 text-center text-muted">No records.</td></tr>
           ) : rows.map((r, i) => {
             const t = tone?.(r);
-            const cls = t === "bad" ? "bg-danger/10 text-danger" : t === "warn" ? "bg-warn/10" : "hover:bg-bg/60";
+            const active = activeRow?.(r);
+            const cls = active ? "bg-accent/10" : t === "bad" ? "bg-danger/10 text-danger" : t === "warn" ? "bg-warn/10" : "hover:bg-bg/60";
             return (
-              <tr key={i} className={`border-t border-border ${cls}`}>
+              <tr key={i} onClick={onRowClick ? () => onRowClick(r) : undefined}
+                className={`border-t border-border ${cls} ${onRowClick ? "cursor-pointer" : ""}`}>
                 {cols.map((c) => (
                   <td key={c.key} className={`px-3 py-2 ${c.num ? "text-right tabular-nums" : ""}`}>
                     {c.fmt ? c.fmt(r[c.key], r) : String(r[c.key] ?? "—")}
@@ -991,6 +994,9 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
   const awaiting = useMemo(() => awaitingDestruction(items, contents), [items, contents]);
   const { batches, direct, lineItems } = useMemo(() => destroyedInRange(items, txns, contents, range.from, range.to), [items, txns, contents, range]);
   const waste = useMemo(() => wasteInRange(contents, range.from, range.to), [contents, range]);
+  const consolidated = useMemo(() => consolidateDestroyed(lineItems), [lineItems]);
+  const [openBatch, setOpenBatch] = useState<string | null>(null);
+  const openBatchLines = useMemo(() => lineItems.filter((c) => c.batch_qr === openBatch), [lineItems, openBatch]);
 
   return (
     <>
@@ -1015,14 +1021,17 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Card><CardBody>
-          <div className="mb-3 text-sm font-semibold text-fg">NDT batches destroyed · {rangeLabel}</div>
+          <div className="mb-1 text-sm font-semibold text-fg">NDT batches destroyed · {rangeLabel}</div>
+          <div className="mb-3 text-xs text-muted">Click a batch to see exactly what was in it.</div>
           <Grid maxH="22rem"
             cols={[
               { key: "at", label: "Destroyed", fmt: fmtTs }, { key: "qr", label: "Batch QR" }, { key: "line", label: "Line" },
               { key: "lines", label: "Items", num: true }, { key: "pieces", label: "Pieces", num: true, fmt: fmtQty },
               { key: "meters", label: "Metres", num: true, fmt: fmtQty }, { key: "destroyer", label: "By" },
             ]}
-            rows={batches as unknown as Record<string, unknown>[]} />
+            rows={batches as unknown as Record<string, unknown>[]}
+            onRowClick={(r) => setOpenBatch((cur) => (cur === r.qr ? null : (r.qr as string)))}
+            activeRow={(r) => r.qr === openBatch} />
         </CardBody></Card>
         <Card><CardBody>
           <div className="mb-3 text-sm font-semibold text-fg">Direct destructions (labels → T1) · {rangeLabel}</div>
@@ -1035,33 +1044,39 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
         </CardBody></Card>
       </div>
 
+      {/* Drill-down: contents of the clicked batch */}
+      {openBatch && (
+        <Card className="border-t-4 border-t-accent"><CardBody>
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold text-fg">Contents of batch <span className="font-mono">{openBatch}</span></div>
+            <button onClick={() => setOpenBatch(null)} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-bg"><X size={14} /> Close</button>
+          </div>
+          <Grid maxH="24rem"
+            cols={[
+              { key: "item", label: "Item" }, { key: "quantity", label: "Qty", num: true, fmt: fmtQty },
+              { key: "unit", label: "Unit" }, { key: "entry_type", label: "Entry type" }, { key: "logged_by", label: "Logged by" },
+            ]}
+            rows={openBatchLines as unknown as Record<string, unknown>[]} />
+        </CardBody></Card>
+      )}
+
+      {/* Consolidated destruction report — one line per distinct item */}
       <Card><CardBody>
-        <div className="mb-3 flex items-center justify-between">
-          <div className="text-sm font-semibold text-fg">Contents of batches destroyed · {rangeLabel}</div>
-          <button onClick={() => csvDownload(`destroyed_contents_${today()}.csv`,
-            [{ key: "batch_qr", label: "Batch QR" }, { key: "item", label: "Item" }, { key: "quantity", label: "Qty" }, { key: "unit", label: "Unit" }, { key: "entry_type", label: "Type" }, { key: "logged_by", label: "By" }],
-            lineItems as unknown as Record<string, unknown>[])}
+        <div className="mb-1 flex items-center justify-between">
+          <div className="text-sm font-semibold text-fg">Consolidated destruction summary · {rangeLabel}</div>
+          <button onClick={() => csvDownload(`destruction_summary_${today()}.csv`,
+            [{ key: "item", label: "Item" }, { key: "entryTypes", label: "Entry types" }, { key: "batches", label: "Batches" }, { key: "unit", label: "Unit" }, { key: "qty", label: "Total Qty" }],
+            consolidated as unknown as Record<string, unknown>[])}
             className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
         </div>
-        <Grid maxH="24rem"
+        <div className="mb-3 text-xs text-muted">Every distinct item destroyed across all batches in the period, quantities summed ({consolidated.length} item{consolidated.length === 1 ? "" : "s"}). Includes waste entries logged inside batches.</div>
+        <Grid maxH="28rem"
           cols={[
-            { key: "batch_qr", label: "Batch QR" }, { key: "item", label: "Item" },
-            { key: "quantity", label: "Qty", num: true, fmt: fmtQty }, { key: "unit", label: "Unit" },
-            { key: "entry_type", label: "Entry type" }, { key: "logged_by", label: "Logged by" },
+            { key: "item", label: "Item" }, { key: "entryTypes", label: "Entry types" },
+            { key: "batches", label: "Batches", num: true }, { key: "unit", label: "Unit" },
+            { key: "qty", label: "Total Qty", num: true, fmt: fmtQty },
           ]}
-          rows={lineItems as unknown as Record<string, unknown>[]} />
-      </CardBody></Card>
-
-      <Card><CardBody>
-        <div className="mb-3 text-sm font-semibold text-fg">Waste · {rangeLabel}</div>
-        <Grid maxH="20rem"
-          cols={[
-            { key: "at", label: "When", fmt: fmtTs }, { key: "item", label: "Item" },
-            { key: "qty", label: "Qty", num: true, fmt: fmtQty }, { key: "unit", label: "Unit" },
-            { key: "batch_qr", label: "Batch" }, { key: "logged_by", label: "By" },
-          ]}
-          rows={waste as unknown as Record<string, unknown>[]} />
-        <div className="mt-2 text-xs text-muted">Waste currently captured as NDT batch entries (Entry_Type = Waste). Standalone bag-weight waste isn&apos;t tagged in the data yet — once you decide how it&apos;s logged (e.g. a reason &quot;Waste&quot; with a weight, or a dedicated tab), I&apos;ll wire it in here.</div>
+          rows={consolidated as unknown as Record<string, unknown>[]} />
       </CardBody></Card>
     </>
   );
