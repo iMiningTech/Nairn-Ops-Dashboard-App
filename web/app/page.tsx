@@ -6,6 +6,7 @@ import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
   CheckCircle2, Search, Download, Factory, ArrowRightLeft, Target, PackageCheck, Flame, ShieldCheck,
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
+  FileDown, Copy, Check,
 } from "lucide-react";
 import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
@@ -25,6 +26,7 @@ import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/ope
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed } from "@/lib/destruction";
+import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz } from "@/lib/utils";
@@ -35,6 +37,7 @@ const SHIFT_START_HOUR = Number(process.env.NEXT_PUBLIC_SHIFT_START_HOUR) || 6;
 const VIEWS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "monthly", label: "Monthly Report", icon: CalendarRange },
+  { id: "report", label: "Monthly Export", icon: FileDown },
   { id: "operators", label: "Operators", icon: Users },
   { id: "breakdowns", label: "Breakdowns", icon: WrenchIcon },
   { id: "finished", label: "Finished Goods", icon: Boxes },
@@ -265,6 +268,7 @@ export default function Dashboard() {
             <div className="space-y-6">
               {view === "overview" && <OverviewView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} decon={decon} tv={tv} />}
               {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} month={hi.slice(0, 7)} />}
+              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} breakdowns={breakdowns} qc={qc} contents={batchContents} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
               {view === "breakdowns" && <BreakdownsView breakdowns={breakdowns} range={range} rangeLabel={rangeLabel} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
@@ -670,6 +674,76 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
             { key: "boxes", label: "Boxes", num: true, fmt: fmtQty }, { key: "qty", label: "Units", num: true, fmt: fmtQty },
           ]}
           rows={variants as unknown as Record<string, unknown>[]} />
+      </CardBody></Card>
+    </>
+  );
+}
+
+// ── MONTHLY EXPORT ───────────────────────────────────────────────────────────
+// One-click consolidated Markdown export of every tab for a chosen month, built
+// to paste straight into Claude Desktop as the input for the human monthly report.
+function MonthlyExportView({ items, txns, users, targets, breakdowns, qc, contents, defaultMonth, generatedAt }:
+  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; contents: BatchContent[]; defaultMonth: string; generatedAt: string | null }) {
+  const [month, setMonth] = useState(defaultMonth);
+  const [copied, setCopied] = useState(false);
+  const maxMonth = todayKey().slice(0, 7);
+
+  const md = useMemo(() => buildMonthlyReport({
+    items, txns, users, targets, breakdowns, qc, contents,
+    month, todayKey: todayKey(), generatedAt, shiftStartHour: SHIFT_START_HOUR,
+  }), [items, txns, users, targets, breakdowns, qc, contents, month, generatedAt]);
+
+  const monthLabel = (() => { const [y, mm] = month.split("-").map(Number); return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }); })();
+
+  async function copy() {
+    try { await navigator.clipboard.writeText(md); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    catch { /* clipboard blocked — user can still select the preview or download */ }
+  }
+  function download() {
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `nairn_monthly_report_${month}.md`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <>
+      <Card className="border-t-4 border-t-accent"><CardBody>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div className="text-base font-semibold text-fg">Monthly report export — {monthLabel}</div>
+            <div className="mt-1 max-w-2xl text-sm text-muted">
+              Pulls every tab (production, operators, breakdowns &amp; QC, destruction, sales, live inventory)
+              into one Markdown document. <span className="font-medium text-fg">Copy</span> it and paste into Claude
+              Desktop as the input for your monthly report, or <span className="font-medium text-fg">Download</span> the
+              <code className="mx-1 rounded bg-bg px-1 py-0.5 text-xs">.md</code> file.
+            </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Month</div>
+              <input type="month" value={month} max={maxMonth} onChange={(e) => e.target.value && setMonth(e.target.value)}
+                className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent" />
+            </div>
+            <button onClick={copy}
+              className="flex items-center gap-1.5 rounded-lg border border-accent bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90">
+              {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Copied!" : "Copy Markdown"}
+            </button>
+            <button onClick={download}
+              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-bg">
+              <Download size={15} /> Download .md
+            </button>
+          </div>
+        </div>
+      </CardBody></Card>
+
+      <Card><CardBody>
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-sm font-semibold text-fg">Preview</div>
+          <div className="text-xs text-muted">{md.length.toLocaleString("en-GB")} characters</div>
+        </div>
+        <pre className="max-h-[64vh] overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-bg p-4 font-mono text-xs leading-relaxed text-fg">{md}</pre>
       </CardBody></Card>
     </>
   );
