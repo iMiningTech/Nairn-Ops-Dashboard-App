@@ -71,6 +71,7 @@ function doPost(e) {
     var body = {};
     try { body = JSON.parse(e.postData.contents); } catch (_) { return _json({ error: 'bad request body' }); }
     if (body.action === 'createBol') return _json(createBol_(body));
+    if (body.action === 'updatePo') return _json(updatePo_(body));
     return _json({ error: 'unknown action' });
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -107,6 +108,79 @@ function createBol_(b) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ── Write-back: amend PO on sold boxes ───────────────────────────────────────
+// Manager correction made from the dashboard's Sales History tab when an
+// operator missed the PO number at point of sale. Sets PO_Number on the
+// Inventory_Master row(s) for the given box QR(s) and appends an audited
+// PO_UPDATE row to Transaction_Log for each. Because a BOL derives its PO live
+// from the boxes, simply reprinting the box's existing BOL then carries the PO —
+// the immutable BOL_Register is never rewritten.
+//   POST {action:'updatePo', qrs:[...], po:'PO12345', user:'JJ'}
+function updatePo_(b) {
+  var qrs = (b.qrs || []).map(function (q) { return String(q).trim(); }).filter(Boolean);
+  var po = String(b.po == null ? '' : b.po).trim();
+  var user = String(b.user || '').trim() || 'dashboard';
+  if (!qrs.length || !po) return { error: 'qrs and po are required' };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = _ss();
+    var inv = ss.getSheetByName('Inventory_Master');
+    if (!inv) return { error: 'Inventory_Master not found' };
+    var data = inv.getDataRange().getValues();
+    var head = data[0].map(function (h) { return String(h).trim(); });
+    var cQr = head.indexOf('QR'), cPo = head.indexOf('PO_Number');
+    var cUpdAt = head.indexOf('Last_Updated_At'), cUpdBy = head.indexOf('Last_Updated_By');
+    if (cQr < 0 || cPo < 0) return { error: 'QR or PO_Number column missing' };
+
+    var tz = ss.getSpreadsheetTimeZone();
+    var nowStr = Utilities.formatDate(new Date(), tz, 'M/d/yyyy H:mm:ss');
+    var want = {}; qrs.forEach(function (q) { want[q] = true; });
+
+    var updates = [];   // { qr, old }
+    for (var i = 1; i < data.length; i++) {
+      var qr = String(data[i][cQr] || '').trim();
+      if (!want[qr]) continue;
+      var old = String(data[i][cPo] || '').trim();
+      inv.getRange(i + 1, cPo + 1).setValue(po);
+      if (cUpdAt >= 0) inv.getRange(i + 1, cUpdAt + 1).setValue(nowStr);
+      if (cUpdBy >= 0) inv.getRange(i + 1, cUpdBy + 1).setValue(user);
+      updates.push({ qr: qr, old: old });
+    }
+
+    // Audit trail: one PO_UPDATE per amended box (matches the log schema so the
+    // dashboard's PO derivation picks it up too).
+    var tlog = ss.getSheetByName('Transaction_Log');
+    var txns = 0;
+    if (tlog && updates.length) {
+      var thead = tlog.getRange(1, 1, 1, tlog.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+      updates.forEach(function (u) {
+        var row = new Array(thead.length).fill('');
+        setCol_(row, thead, 'Timestamp', nowStr);
+        setCol_(row, thead, 'QR', u.qr);
+        setCol_(row, thead, 'Type', 'PO_UPDATE');
+        setCol_(row, thead, 'Field', 'PO_Number');
+        setCol_(row, thead, 'Old_Value', u.old);
+        setCol_(row, thead, 'New_Value', po);
+        setCol_(row, thead, 'Reason', 'PO amendment via dashboard');
+        setCol_(row, thead, 'User', user);
+        setCol_(row, thead, 'Source', 'dashboard');
+        tlog.appendRow(row);
+        txns++;
+      });
+    }
+    return { updated: updates.length, txns: txns, qrs: updates.map(function (u) { return u.qr; }), po: po };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function setCol_(row, headers, name, value) {
+  var i = headers.indexOf(name);
+  if (i >= 0) row[i] = value;
 }
 
 function bols_() {

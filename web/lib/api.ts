@@ -472,6 +472,16 @@ export const api = {
     if (j.error) throw new Error(j.error);
     return j;
   },
+  // Amend the PO number on one or more sold boxes (manager correction from the
+  // dashboard). Writes PO_Number to Inventory_Master and appends an audited
+  // PO_UPDATE transaction per box. Reprinting the box's BOL then carries the PO.
+  async updatePo(qrs: string[], po: string, user: string): Promise<{ updated: number; txns: number; qrs: string[]; po: string }> {
+    if (!BOL_API) throw new Error("PO amendment not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "updatePo", qrs, po, user }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
   async bols(): Promise<{ items: IssuedBol[] }> {
     try {
       if (MODE === "gviz") return { items: (await gvizTab("BOL_Register")).map(mapIssuedBol).filter((b) => b.bol_no) };

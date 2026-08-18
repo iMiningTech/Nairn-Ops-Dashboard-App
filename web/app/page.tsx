@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -24,12 +24,12 @@ import {
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
-import { saleEvents, salesSummary } from "@/lib/sales";
+import { saleEvents, salesSummary, type SaleEvent } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
 import { TYPE_COLOURS } from "@/lib/colors";
-import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz } from "@/lib/utils";
+import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz, dateKey } from "@/lib/utils";
 
 const CUSTOMER = "Nairn Det Plant";
 const SHIFT_START_HOUR = Number(process.env.NEXT_PUBLIC_SHIFT_START_HOUR) || 6;
@@ -275,7 +275,7 @@ export default function Dashboard() {
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
               {view === "financial" && <FinancialLookupView items={items} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
-              {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
+              {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={load} onNavigate={setView} />}
               {view === "bol" && <BolView items={items} txns={txns} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
@@ -1248,9 +1248,54 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
 }
 
 // ── Sales History: sold boxes, PO rollup, volume — within the date range ─────
-function SalesHistoryView({ items, txns, range, rangeLabel }: { items: InventoryItem[]; txns: Transaction[]; range: DateRange; rangeLabel: string }) {
+function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate }:
+  { items: InventoryItem[]; txns: Transaction[]; range: DateRange; rangeLabel: string; onSaved: () => void; onNavigate: (v: ViewId) => void }) {
   const events = useMemo(() => saleEvents(items, txns), [items, txns]);
   const sum = useMemo(() => salesSummary(events, range.from, range.to), [events, range]);
+
+  // Issued BOLs (loaded lazily) → map every box QR to the BOL it shipped on, so
+  // after a PO amendment we can prompt to reprint the affected document.
+  const [bols, setBols] = useState<IssuedBol[]>([]);
+  useEffect(() => { if (api.bolEnabled) api.bols().then((r) => setBols(r.items)).catch(() => {}); }, []);
+  const bolByQr = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of bols) b.box_qrs.split(",").map((s) => s.trim()).filter(Boolean).forEach((qr) => m.set(qr, b.bol_no));
+    return m;
+  }, [bols]);
+  const bolsForQrs = (qrs: string[]) => Array.from(new Set(qrs.map((q) => bolByQr.get(q)).filter(Boolean) as string[]));
+
+  // Boxes sold together with the clicked box: same customer + same day, sharing
+  // its PO state (all missing, or all the same PO being corrected). Includes it.
+  const siblings = (e: SaleEvent) => events.filter((x) =>
+    dateKey(x.at) === dateKey(e.at) && (x.customer || "") === (e.customer || "") && (e.po ? x.po === e.po : !x.po));
+
+  // ── PO amendment panel state ────────────────────────────────────────────────
+  const [amend, setAmend] = useState<SaleEvent | null>(null);
+  const [poInput, setPoInput] = useState("");
+  const [applyBatch, setApplyBatch] = useState(true);
+  const [editor, setEditor] = useState(() => { try { return localStorage.getItem("nairn_editor") || ""; } catch { return ""; } });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<{ count: number; bols: string[] } | null>(null);
+
+  function openAmend(e: SaleEvent) {
+    setAmend(e); setPoInput(e.po || ""); setApplyBatch(true); setErr(null); setDone(null);
+  }
+  function closeAmend() { setAmend(null); setDone(null); setErr(null); }
+
+  const targetQrs = amend ? (applyBatch ? Array.from(new Set(siblings(amend).map((s) => s.qr))) : [amend.qr]) : [];
+
+  async function save() {
+    if (!amend || !poInput.trim() || !editor.trim()) return;
+    setBusy(true); setErr(null);
+    try {
+      try { localStorage.setItem("nairn_editor", editor.trim()); } catch { /* ignore */ }
+      const r = await api.updatePo(targetQrs, poInput.trim(), editor.trim());
+      setDone({ count: r.updated, bols: bolsForQrs(targetQrs) });
+      onSaved();   // reload feeds so the sale log + any reprint reflect the new PO
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
 
   const poCols: Col[] = [
     { key: "po", label: "PO number" }, { key: "customer", label: "Customer" },
@@ -1259,7 +1304,8 @@ function SalesHistoryView({ items, txns, range, rangeLabel }: { items: Inventory
   const logCols: Col[] = [
     { key: "at", label: "Sold", fmt: fmtTs }, { key: "qr", label: "Barcode" }, { key: "description", label: "Description" },
     { key: "product", label: "Product" }, { key: "qty", label: "Qty", num: true, fmt: fmtQty },
-    { key: "po", label: "PO" }, { key: "customer", label: "Customer" },
+    { key: "po", label: "PO", fmt: (v) => (String(v ?? "").trim() ? String(v) : "— add —") },
+    { key: "customer", label: "Customer" },
   ];
 
   return (
@@ -1277,13 +1323,78 @@ function SalesHistoryView({ items, txns, range, rangeLabel }: { items: Inventory
         <Grid cols={poCols} rows={sum.byPo as unknown as Record<string, unknown>[]} maxH="20rem" />
       </CardBody></Card>
 
+      {/* ── PO amendment panel ──────────────────────────────────────────────── */}
+      {amend && (
+        <Card className="border-t-4 border-t-accent"><CardBody>
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold text-fg">Amend PO — <span className="font-mono">{amend.qr}</span></div>
+            <button onClick={closeAmend} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-bg"><X size={14} /> Close</button>
+          </div>
+          <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm md:grid-cols-4">
+            <div><span className="text-muted">Description</span><div className="font-medium text-fg">{amend.description || "—"}</div></div>
+            <div><span className="text-muted">Product</span><div className="font-medium text-fg">{amend.product || "—"}</div></div>
+            <div><span className="text-muted">Qty</span><div className="font-medium text-fg">{fmtNum(amend.qty)}</div></div>
+            <div><span className="text-muted">Sold</span><div className="font-medium text-fg">{fmtTime(amend.at)}</div></div>
+            <div><span className="text-muted">Customer</span><div className="font-medium text-fg">{amend.customer || "—"}</div></div>
+            <div><span className="text-muted">Current PO</span><div className="font-medium text-fg">{amend.po || "— none —"}</div></div>
+          </div>
+
+          {done ? (
+            <div className="rounded-xl border border-ok/40 bg-ok/10 p-4 text-sm">
+              <div className="flex items-center gap-2 font-semibold text-ok"><CheckCircle2 size={16} /> PO set to “{poInput.trim()}” on {done.count} box(es).</div>
+              {done.bols.length > 0 ? (
+                <div className="mt-2 text-fg">
+                  {done.bols.join(", ")} already shipped these boxes. Reprint from the Bill of Lading tab to pick up the new PO — the document derives it live from the boxes.
+                  <div className="mt-2"><button onClick={() => onNavigate("bol")} className="inline-flex items-center gap-1 rounded-lg border border-accent bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"><FileText size={13} /> Go to Bill of Lading</button></div>
+                </div>
+              ) : <div className="mt-1 text-muted">No issued BOL references these boxes.</div>}
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">PO number</div>
+                  <input value={poInput} onChange={(e) => setPoInput(e.target.value)} placeholder="e.g. 4500123456" autoFocus
+                    className="w-56 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Your name / initials</div>
+                  <input value={editor} onChange={(e) => setEditor(e.target.value)} placeholder="for the audit log"
+                    className="w-44 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+                </div>
+                <button onClick={save} disabled={busy || !poInput.trim() || !editor.trim() || !api.bolEnabled}
+                  className="rounded-lg border border-accent bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50">
+                  {busy ? "Saving…" : `Save PO to ${targetQrs.length} box(es)`}
+                </button>
+              </div>
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-fg">
+                <input type="checkbox" checked={applyBatch} onChange={(e) => setApplyBatch(e.target.checked)} />
+                Apply to all boxes sold in this batch ({siblings(amend).length} box(es): same customer &amp; day{amend.po ? ", same PO" : ", currently no PO"})
+              </label>
+              {bolsForQrs(targetQrs).length > 0 && (
+                <div className="mt-2 text-xs text-warn">Heads-up: {bolsForQrs(targetQrs).join(", ")} already shipped {targetQrs.length > 1 ? "some of these boxes" : "this box"} — you&apos;ll be prompted to reprint after saving.</div>
+              )}
+              {!api.bolEnabled && <div className="mt-2 text-xs text-warn">Write-back endpoint not configured (NEXT_PUBLIC_BOL_API) — amendment is disabled.</div>}
+              {err && <div className="mt-2 flex items-center gap-2 text-sm text-danger"><AlertCircle size={15} /> {err}</div>}
+              <div className="mt-3 text-xs text-muted">Writes the PO to inventory and logs an audited PO_UPDATE for each box.</div>
+            </>
+          )}
+        </CardBody></Card>
+      )}
+
       <Card><CardBody>
         <div className="mb-3 flex items-center justify-between">
-          <div className="text-sm font-semibold text-fg">Sale log ({fmtNum(sum.boxes)} boxes)</div>
+          <div>
+            <div className="text-sm font-semibold text-fg">Sale log ({fmtNum(sum.boxes)} boxes)</div>
+            <div className="text-xs text-muted">Click a row to add or amend its PO number.</div>
+          </div>
           <button onClick={() => csvDownload(`sales_${today()}.csv`, logCols, sum.events.map((e) => ({ ...e, at: fmtTime(e.at) })))}
             className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
         </div>
-        <Grid cols={logCols} rows={sum.events as unknown as Record<string, unknown>[]} maxH="30rem" />
+        <Grid cols={logCols} rows={sum.events as unknown as Record<string, unknown>[]} maxH="30rem"
+          onRowClick={(r) => openAmend(r as unknown as SaleEvent)}
+          activeRow={(r) => !!amend && r.qr === amend.qr && r.at === amend.at}
+          tone={(r) => (String(r.po ?? "").trim() ? undefined : "warn")} />
       </CardBody></Card>
     </>
   );
