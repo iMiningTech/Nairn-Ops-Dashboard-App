@@ -125,8 +125,9 @@ html, body {
 /* Embedded receiver signature: transparent PNG sits over the signature line. */
 /* Signature overlays the line without changing its height/position. */
 .bol-doc .sigline .u.sig { position: relative; overflow: visible; }
-/* Signature sits on the RIGHT of the line so the "Signature" label (top-left) stays legible. */
-.bol-doc .sig-img { position: absolute; right: 2px; bottom: 0; height: 42px; width: auto; max-width: 62%;
+/* Signature sits on the right of the line (label stays legible on the left) but
+   with a gap before the Date cell so it never crowds it. */
+.bol-doc .sig-img { position: absolute; right: 9mm; bottom: 0; height: 42px; width: auto; max-width: 58%;
   object-fit: contain; object-position: right bottom; pointer-events: none; }
 .bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
 
