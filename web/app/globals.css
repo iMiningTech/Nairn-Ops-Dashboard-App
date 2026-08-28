@@ -125,10 +125,12 @@ html, body {
 /* Embedded receiver signature: transparent PNG sits over the signature line. */
 /* Signature overlays the line without changing its height/position. */
 .bol-doc .sigline .u.sig { position: relative; overflow: visible; }
-/* Signature sits on the right of the line (label stays legible on the left) but
-   with a gap before the Date cell so it never crowds it. */
-.bol-doc .sig-img { position: absolute; right: 9mm; bottom: 0; height: 42px; width: auto; max-width: 58%;
+/* Signature sits on the right of the line (label stays legible on the left).
+   Consignor and consignee are positioned independently. */
+.bol-doc .sig-img { position: absolute; bottom: 0; height: 42px; width: auto; max-width: 58%;
   object-fit: contain; object-position: right bottom; pointer-events: none; }
+.bol-doc .sig-img.sig-consignee { right: 6mm; }   /* tiny nudge left */
+.bol-doc .sig-img.sig-consignor { right: 16mm; }  /* was way too far right */
 .bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
 
 @media print {

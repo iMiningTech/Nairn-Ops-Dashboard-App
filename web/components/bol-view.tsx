@@ -504,7 +504,7 @@ function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor,
               {consignorSigUrl ? (
                 <div className="u sig">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img className="sig-img" src={consignorSigUrl} alt="Consignor signature" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                  <img className="sig-img sig-consignor" src={consignorSigUrl} alt="Consignor signature" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                 </div>
               ) : <div className="u"></div>}
             </div>
@@ -520,7 +520,7 @@ function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor,
               {signatureUrl ? (
                 <div className="u sig">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img className="sig-img" src={signatureUrl} alt="Receiver signature" />
+                  <img className="sig-img sig-consignee" src={signatureUrl} alt="Receiver signature" />
                 </div>
               ) : <div className="u"></div>}
             </div>
