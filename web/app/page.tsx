@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
@@ -133,13 +133,13 @@ export default function Dashboard() {
   const range = { from: lo, to: hi };
   const rangeLabel = `${shortDay(lo)}–${shortDay(hi)}`;
 
-  // For ~5 min after a write or manual refresh, read Inventory/Transactions LIVE
-  // (bypassing the stale gviz cache) so corrections show immediately and the 60s
-  // ambient refresh doesn't revert them. A ref so the interval sees the latest.
-  const preferLiveRef = useRef(0);
-  async function load(live = false) {
+  // Always read the two WRITTEN feeds (Inventory + Transactions) live, bypassing
+  // Google's gviz CSV cache which lags for minutes — otherwise a correction that
+  // saved to the sheet stays invisible on the dashboard. Other feeds (rarely
+  // written) stay on the cheap cached path.
+  async function load() {
     setLoading(true); setError(null);
-    const useLive = (live || Date.now() < preferLiveRef.current) && api.liveEnabled;
+    const useLive = api.liveEnabled;
     try {
       const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr] = await Promise.all([
         useLive ? api.stockOnHandLive().catch(() => api.stockOnHand()) : api.stockOnHand(),
@@ -170,9 +170,9 @@ export default function Dashboard() {
       setLoading(false);
     }
   }
-  // Manual refresh + post-write reload: read live now and keep reading live for
-  // the next 5 minutes so a correction can't be masked by the cached feed.
-  function reloadLive() { preferLiveRef.current = Date.now() + 5 * 60_000; return load(true); }
+  // Inventory + transactions are already always-live; this is just a clear alias
+  // for the post-write / manual-refresh callers.
+  function reloadLive() { return load(); }
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
   useEffect(() => {
@@ -189,7 +189,7 @@ export default function Dashboard() {
     setRole(null); setView("overview");
   }
   useEffect(() => {
-    const id = setInterval(load, 60_000);
+    const id = setInterval(load, 120_000);
     return () => clearInterval(id);
     // eslint-disable-next-line
   }, []);
@@ -253,7 +253,7 @@ export default function Dashboard() {
             <span className={`font-semibold text-fg ${tv ? "text-2xl" : "text-lg"}`}>{CUSTOMER} — {headerTitle}</span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted">Updated {fmtTime(lastUpdated)} · auto every 60s</span>
+            <span className="text-xs text-muted">Updated {fmtTime(lastUpdated)} · live · auto every 2 min</span>
             {!tv && (
               <button onClick={() => reloadLive()} className="flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-sm hover:bg-bg">
                 <RefreshCw size={15} className={loading ? "animate-spin" : ""} /> Refresh
