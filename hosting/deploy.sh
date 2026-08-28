@@ -29,7 +29,13 @@ get() { aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGI
 BUCKET="$(get BucketName)"; DIST="$(get DistributionId)"; URL="$(get Url)"
 
 echo "3/4  Syncing web/out → s3://$BUCKET …"
-aws s3 sync "$HERE/../web/out" "s3://$BUCKET" --delete --region "$REGION" --profile "$PROFILE"
+# Content-hashed assets (JS/CSS/images) never change under a given name → cache forever.
+aws s3 sync "$HERE/../web/out" "s3://$BUCKET" --delete --region "$REGION" --profile "$PROFILE" \
+  --exclude "*.html" --exclude "*.txt" --cache-control "public, max-age=31536000, immutable"
+# HTML + Next route text MUST revalidate every load, or browsers serve a stale
+# app and never pick up new deploys. no-cache = always check with the origin.
+aws s3 sync "$HERE/../web/out" "s3://$BUCKET" --region "$REGION" --profile "$PROFILE" \
+  --exclude "*" --include "*.html" --include "*.txt" --cache-control "no-cache, must-revalidate"
 
 echo "4/4  Invalidating CloudFront ($DIST)…"
 aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*" \

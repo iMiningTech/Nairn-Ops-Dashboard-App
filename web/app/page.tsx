@@ -1260,17 +1260,18 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
   const [live, setLive] = useState<{ items: InventoryItem[]; txns: Transaction[] } | null>(null);
   const [liveTick, setLiveTick] = useState(0);
   const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState(false);
   useEffect(() => {
     if (!api.liveEnabled) return;
     let cancelled = false;
-    setLiveLoading(true);
-    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 20000));
+    setLiveLoading(true); setLiveError(false);
+    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 45000));
     Promise.race([Promise.all([api.stockOnHandLive(), api.transactionsLive()]), timeout])
       .then((res) => {
         const [s, t] = res as [{ items: InventoryItem[] }, { items: Transaction[] }];
-        if (!cancelled) setLive({ items: s.items || [], txns: t.items || [] });
+        if (!cancelled) { setLive({ items: s.items || [], txns: t.items || [] }); setLiveError(false); }
       })
-      .catch(() => { /* keep gviz props */ })
+      .catch(() => { if (!cancelled) setLiveError(true); /* keep gviz props */ })
       .finally(() => { if (!cancelled) setLiveLoading(false); });
     return () => { cancelled = true; };
   }, [liveTick]);
@@ -1456,10 +1457,13 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
         </CardBody></Card>
       )}
 
-      <div className="flex items-center gap-2 text-sm text-muted">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
         Showing {rangeLabel}
-        {live ? <span className="rounded bg-ok/10 px-1.5 py-0.5 text-xs font-medium text-ok">live data</span>
-          : liveLoading ? <span className="text-xs">· loading live…</span> : null}
+        {live ? <span className="rounded bg-ok/10 px-1.5 py-0.5 text-xs font-medium text-ok">live data · PO up to date</span>
+          : liveLoading ? <span className="text-xs">· loading live data…</span>
+          : liveError ? <span className="rounded bg-danger/10 px-1.5 py-0.5 text-xs font-medium text-danger">live read failed — showing cached (click Refresh)</span>
+          : null}
+        {live && <button onClick={refetchLive} className="text-xs underline hover:text-fg">re-check</button>}
       </div>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat label="Volume sold" value={fmtNum(sum.volume)} sub="units" />
