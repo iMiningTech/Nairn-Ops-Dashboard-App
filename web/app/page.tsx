@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import Image from "next/image";
 import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
@@ -133,11 +133,17 @@ export default function Dashboard() {
   const range = { from: lo, to: hi };
   const rangeLabel = `${shortDay(lo)}–${shortDay(hi)}`;
 
-  async function load() {
+  // For ~5 min after a write or manual refresh, read Inventory/Transactions LIVE
+  // (bypassing the stale gviz cache) so corrections show immediately and the 60s
+  // ambient refresh doesn't revert them. A ref so the interval sees the latest.
+  const preferLiveRef = useRef(0);
+  async function load(live = false) {
     setLoading(true); setError(null);
+    const useLive = (live || Date.now() < preferLiveRef.current) && api.liveEnabled;
     try {
       const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr] = await Promise.all([
-        api.stockOnHand(), api.transactions(),
+        useLive ? api.stockOnHandLive().catch(() => api.stockOnHand()) : api.stockOnHand(),
+        useLive ? api.transactionsLive().catch(() => api.transactions()) : api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
         api.breakdowns().catch(() => ({ items: [] as Breakdown[] })),
@@ -164,6 +170,9 @@ export default function Dashboard() {
       setLoading(false);
     }
   }
+  // Manual refresh + post-write reload: read live now and keep reading live for
+  // the next 5 minutes so a correction can't be masked by the cached feed.
+  function reloadLive() { preferLiveRef.current = Date.now() + 5 * 60_000; return load(true); }
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
   useEffect(() => {
@@ -246,7 +255,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted">Updated {fmtTime(lastUpdated)} · auto every 60s</span>
             {!tv && (
-              <button onClick={load} className="flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-sm hover:bg-bg">
+              <button onClick={() => reloadLive()} className="flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-sm hover:bg-bg">
                 <RefreshCw size={15} className={loading ? "animate-spin" : ""} /> Refresh
               </button>
             )}
@@ -275,7 +284,7 @@ export default function Dashboard() {
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
               {view === "financial" && <FinancialLookupView items={items} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
-              {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={load} onNavigate={setView} />}
+              {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} onNavigate={setView} />}
               {view === "bol" && <BolView items={items} txns={txns} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}

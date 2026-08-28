@@ -392,9 +392,24 @@ function mapTransactionRow(r: Record<string, string>): Transaction {
   };
 }
 
+// On-demand LIVE reads that bypass the gviz cache by hitting the Apps Script
+// /exec directly. Google caches the gviz CSV for minutes, so a just-written
+// correction won't show via gviz; these give an immediate, authoritative read
+// after a write or a manual refresh. Cheap because they run only on demand.
+const LIVE_BASE = API_BASE || BOL_API;
+async function liveJson<T>(action: string): Promise<T> {
+  const res = await fetch(`${LIVE_BASE}?action=${encodeURIComponent(action)}`, { cache: "no-store" });
+  const j = await res.json();
+  if (j && (j as { error?: string }).error) throw new Error((j as { error?: string }).error);
+  return j as T;
+}
+
 // ── Public client — the only thing the UI imports ───────────────────────────
 export const api = {
   mode: MODE,
+  liveEnabled: !!LIVE_BASE,
+  stockOnHandLive(): Promise<StockResponse> { return liveJson<StockResponse>("stockOnHand"); },
+  transactionsLive(): Promise<TransactionResponse> { return liveJson<TransactionResponse>("transactions"); },
   async stockOnHand(): Promise<StockResponse> {
     if (MODE === "gviz") {
       const items = (await gvizTab("Inventory_Master")).map(mapInventoryRow);
