@@ -133,17 +133,11 @@ export default function Dashboard() {
   const range = { from: lo, to: hi };
   const rangeLabel = `${shortDay(lo)}–${shortDay(hi)}`;
 
-  // Always read the two WRITTEN feeds (Inventory + Transactions) live, bypassing
-  // Google's gviz CSV cache which lags for minutes — otherwise a correction that
-  // saved to the sheet stays invisible on the dashboard. Other feeds (rarely
-  // written) stay on the cheap cached path.
   async function load() {
     setLoading(true); setError(null);
-    const useLive = api.liveEnabled;
     try {
       const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr] = await Promise.all([
-        useLive ? api.stockOnHandLive().catch(() => api.stockOnHand()) : api.stockOnHand(),
-        useLive ? api.transactionsLive().catch(() => api.transactions()) : api.transactions(),
+        api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
         api.breakdowns().catch(() => ({ items: [] as Breakdown[] })),
@@ -189,7 +183,7 @@ export default function Dashboard() {
     setRole(null); setView("overview");
   }
   useEffect(() => {
-    const id = setInterval(load, 120_000);
+    const id = setInterval(load, 60_000);
     return () => clearInterval(id);
     // eslint-disable-next-line
   }, []);
@@ -253,7 +247,7 @@ export default function Dashboard() {
             <span className={`font-semibold text-fg ${tv ? "text-2xl" : "text-lg"}`}>{CUSTOMER} — {headerTitle}</span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted">Updated {fmtTime(lastUpdated)} · live · auto every 2 min</span>
+            <span className="text-xs text-muted">Updated {fmtTime(lastUpdated)} · auto every 60s</span>
             {!tv && (
               <button onClick={() => reloadLive()} className="flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-sm hover:bg-bg">
                 <RefreshCw size={15} className={loading ? "animate-spin" : ""} /> Refresh
