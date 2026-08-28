@@ -102,6 +102,12 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     else selectable.forEach((b) => n.add(b.qr));
     return n;
   });
+  // Ordering: boxes/collections NOT yet on a BOL float to the top (the actionable
+  // ones); already-shipped boxes sink. Ties break by most-recently sold.
+  const grpOpen = (bs: InventoryItem[]) => bs.some((b) => !usedQr.has(b.qr));
+  const boxOrder = (a: InventoryItem, b: InventoryItem) =>
+    (usedQr.has(a.qr) ? 1 : 0) - (usedQr.has(b.qr) ? 1 : 0)
+    || (Date.parse(soldOn(b) || "") || 0) - (Date.parse(soldOn(a) || "") || 0);
 
   function generate() {
     const shipTo = fields.shipTo.trim() || bol.customers.join(", ");
@@ -221,13 +227,16 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
             <div className="rounded-xl border border-dashed border-border py-8 text-center text-sm text-muted">No boxes are marked Sold yet. Scan + sell boxes in the app, then they appear here.</div>
           ) : (
             <div className="max-h-[26rem] space-y-3 overflow-auto">
-              {groups.map(({ customer, boxes }) => {
+              {groups.slice().sort((a, b) => (grpOpen(b.boxes) ? 1 : 0) - (grpOpen(a.boxes) ? 1 : 0)).map(({ customer, boxes }) => {
                 // Split each customer's boxes by PO so separate collections are
                 // distinguishable — each PO cluster gets its own select-all toggle.
+                // Open (not-yet-on-a-BOL) collections and boxes float to the top.
                 const byPo = new Map<string, InventoryItem[]>();
                 for (const b of boxes) { const k = poForQr(b.qr) || "(no PO)"; if (!byPo.has(k)) byPo.set(k, []); byPo.get(k)!.push(b); }
-                const poGroups = Array.from(byPo, ([po, bs]) => ({ po, bs }))
-                  .sort((a, b) => (a.po === "(no PO)" ? 1 : 0) - (b.po === "(no PO)" ? 1 : 0) || a.po.localeCompare(b.po, undefined, { numeric: true }));
+                const poGroups = Array.from(byPo, ([po, bs]) => ({ po, bs: bs.slice().sort(boxOrder) }))
+                  .sort((a, b) => (grpOpen(b.bs) ? 1 : 0) - (grpOpen(a.bs) ? 1 : 0)
+                    || (a.po === "(no PO)" ? 1 : 0) - (b.po === "(no PO)" ? 1 : 0)
+                    || a.po.localeCompare(b.po, undefined, { numeric: true }));
                 return (
                 <div key={customer} className="rounded-xl border border-border">
                   <label className="flex cursor-pointer items-center gap-2 border-b border-border bg-bg px-3 py-2 text-sm font-semibold text-fg">
