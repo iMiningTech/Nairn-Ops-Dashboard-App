@@ -119,13 +119,18 @@ function createBol_(b) {
 // its PO live from the boxes, reprinting the box's existing BOL carries the PO —
 // the immutable BOL_Register is never rewritten. No-op fields are skipped (no
 // redundant writes or audit rows).
-//   POST {action:'amendSale', qrs:[...], po:'PO12345', customer:'Acme', user:'JJ'}
+// With mark_sold:true it also records the SALE itself for boxes that were moved
+// Off-Site without one — sets Status='Sold' and appends a Status→Sold record
+// (idempotent: skipped for boxes that already have that record) so they enter
+// the sales pipeline.
+//   POST {action:'amendSale', qrs:[...], po:'PO12345', customer:'Acme', mark_sold:true, user:'JJ'}
 function amendSale_(b) {
   var qrs = (b.qrs || []).map(function (q) { return String(q).trim(); }).filter(Boolean);
   var po = String(b.po == null ? '' : b.po).trim();
   var customer = String(b.customer == null ? '' : b.customer).trim();
+  var markSold = b.mark_sold === true || b.markSold === true;
   var user = String(b.user || '').trim() || 'dashboard';
-  if (!qrs.length || (!po && !customer)) return { error: 'qrs and at least one of po/customer are required' };
+  if (!qrs.length || (!po && !customer && !markSold)) return { error: 'qrs and at least one of po/customer/mark_sold are required' };
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -135,35 +140,50 @@ function amendSale_(b) {
     if (!inv) return { error: 'Inventory_Master not found' };
     var data = inv.getDataRange().getValues();
     var head = data[0].map(function (h) { return String(h).trim(); });
-    var cQr = head.indexOf('QR'), cPo = head.indexOf('PO_Number'), cCust = head.indexOf('Customer');
+    var cQr = head.indexOf('QR'), cPo = head.indexOf('PO_Number'), cCust = head.indexOf('Customer'), cStatus = head.indexOf('Status');
     var cUpdAt = head.indexOf('Last_Updated_At'), cUpdBy = head.indexOf('Last_Updated_By');
     if (cQr < 0) return { error: 'QR column missing' };
     if (po && cPo < 0) return { error: 'PO_Number column missing' };
     if (customer && cCust < 0) return { error: 'Customer column missing' };
+    if (markSold && cStatus < 0) return { error: 'Status column missing' };
 
     var tz = ss.getSpreadsheetTimeZone();
     var nowStr = Utilities.formatDate(new Date(), tz, 'M/d/yyyy H:mm:ss');
     var want = {}; qrs.forEach(function (q) { want[q] = true; });
+    var tlog = ss.getSheetByName('Transaction_Log');
 
-    var updates = [];   // { qr, oldPo, oldCust, changedPo, changedCust }
+    // For idempotent mark-sold: which requested QRs already have a Status→Sold record.
+    var alreadySold = {};
+    if (markSold && tlog) {
+      var tv = tlog.getDataRange().getValues();
+      var th0 = tv[0].map(function (h) { return String(h).trim(); });
+      var tq = th0.indexOf('QR'), tf = th0.indexOf('Field'), tn = th0.indexOf('New_Value');
+      for (var r = 1; r < tv.length; r++) {
+        if (String(tv[r][tf]) === 'Status' && String(tv[r][tn]) === 'Sold') alreadySold[String(tv[r][tq]).trim()] = true;
+      }
+    }
+
+    var updates = [];   // { qr, oldPo, oldCust, oldStatus, changedPo, changedCust, doSold }
     for (var i = 1; i < data.length; i++) {
       var qr = String(data[i][cQr] || '').trim();
       if (!want[qr]) continue;
       var oldPo = cPo >= 0 ? String(data[i][cPo] || '').trim() : '';
       var oldCust = cCust >= 0 ? String(data[i][cCust] || '').trim() : '';
+      var oldStatus = cStatus >= 0 ? String(data[i][cStatus] || '').trim() : '';
       var changedPo = !!po && po !== oldPo;
       var changedCust = !!customer && customer !== oldCust;
-      if (!changedPo && !changedCust) continue;
+      var doSold = markSold && !alreadySold[qr];   // write the missing sale record
+      if (!changedPo && !changedCust && !doSold) continue;
       if (changedPo) inv.getRange(i + 1, cPo + 1).setValue(po);
       if (changedCust) inv.getRange(i + 1, cCust + 1).setValue(customer);
+      if (doSold && oldStatus !== 'Sold') inv.getRange(i + 1, cStatus + 1).setValue('Sold');
       if (cUpdAt >= 0) inv.getRange(i + 1, cUpdAt + 1).setValue(nowStr);
       if (cUpdBy >= 0) inv.getRange(i + 1, cUpdBy + 1).setValue(user);
-      updates.push({ qr: qr, oldPo: oldPo, oldCust: oldCust, changedPo: changedPo, changedCust: changedCust });
+      updates.push({ qr: qr, oldPo: oldPo, oldCust: oldCust, oldStatus: oldStatus, changedPo: changedPo, changedCust: changedCust, doSold: doSold });
     }
 
-    // Audit trail: a PO_UPDATE and/or CUSTOMER_UPDATE per box, only for fields
-    // that changed (matches the log schema so the dashboard picks them up too).
-    var tlog = ss.getSheetByName('Transaction_Log');
+    // Audit trail: PO_UPDATE / CUSTOMER_UPDATE / Status→Sold per box, only for
+    // fields that changed (matches the log schema so the dashboard picks them up).
     var txns = 0;
     if (tlog && updates.length) {
       var thead = tlog.getRange(1, 1, 1, tlog.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
@@ -182,11 +202,12 @@ function amendSale_(b) {
         txns++;
       };
       updates.forEach(function (u) {
+        if (u.doSold) logTxn(u.qr, 'STATUS_CHANGE', 'Status', u.oldStatus, 'Sold', 'Marked sold via dashboard');
         if (u.changedPo) logTxn(u.qr, 'PO_UPDATE', 'PO_Number', u.oldPo, po, 'PO amendment via dashboard');
         if (u.changedCust) logTxn(u.qr, 'CUSTOMER_UPDATE', 'Customer', u.oldCust, customer, 'Customer amendment via dashboard');
       });
     }
-    return { updated: updates.length, txns: txns, qrs: updates.map(function (u) { return u.qr; }), po: po, customer: customer };
+    return { updated: updates.length, txns: txns, qrs: updates.map(function (u) { return u.qr; }), po: po, customer: customer, mark_sold: markSold };
   } finally {
     lock.releaseLock();
   }

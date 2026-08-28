@@ -476,9 +476,9 @@ export const api = {
   // correction from the dashboard). Writes to Inventory_Master and appends an
   // audited PO_UPDATE / CUSTOMER_UPDATE transaction per changed field. Empty
   // values are left unchanged. Reprinting a box's BOL then carries the new PO.
-  async amendSale(qrs: string[], changes: { po?: string; customer?: string }, user: string): Promise<{ updated: number; txns: number; qrs: string[]; po: string; customer: string }> {
+  async amendSale(qrs: string[], changes: { po?: string; customer?: string; markSold?: boolean }, user: string): Promise<{ updated: number; txns: number; qrs: string[]; po: string; customer: string }> {
     if (!BOL_API) throw new Error("Sale amendment not configured (set NEXT_PUBLIC_BOL_API).");
-    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "amendSale", qrs, po: changes.po ?? "", customer: changes.customer ?? "", user }) });
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "amendSale", qrs, po: changes.po ?? "", customer: changes.customer ?? "", mark_sold: !!changes.markSold, user }) });
     const j = await res.json();
     if (j.error) throw new Error(j.error);
     return j;

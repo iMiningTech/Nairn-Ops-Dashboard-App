@@ -24,7 +24,7 @@ import {
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
-import { saleEvents, salesSummary, type SaleEvent } from "@/lib/sales";
+import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
@@ -1307,6 +1307,39 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
   const baseEvents = showAll ? events : sum.events;
   const displayEvents = missingOnly ? baseEvents.filter(needsAttn) : baseEvents;
 
+  // ── Off-site boxes WITHOUT a sales record — the correction queue ─────────────
+  const offOrphans = useMemo(() => offSiteWithoutSale(items, txns), [items, txns]);
+  const offKey = offOrphans.map((o) => o.qr).join(",");
+  const [selFix, setSelFix] = useState<Set<string>>(new Set());
+  const [poFix, setPoFix] = useState("");
+  const [custFix, setCustFix] = useState("");
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixErr, setFixErr] = useState<string | null>(null);
+  const [fixDone, setFixDone] = useState<{ count: number } | null>(null);
+  useEffect(() => {
+    setSelFix(new Set(offOrphans.map((o) => o.qr)));            // default: select all
+    const pos = Array.from(new Set(offOrphans.map((o) => o.po).filter(Boolean)));
+    const custs = Array.from(new Set(offOrphans.map((o) => o.customer).filter(Boolean)));
+    setPoFix(pos.length === 1 ? pos[0] : "");                    // prefill when unambiguous
+    setCustFix(custs.length === 1 ? custs[0] : "");
+    setFixDone(null); setFixErr(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offKey]);
+  const toggleFix = (qr: string) => setSelFix((s) => { const n = new Set(s); n.has(qr) ? n.delete(qr) : n.add(qr); return n; });
+  const fixCount = offOrphans.filter((o) => selFix.has(o.qr)).length;
+  async function fixSave() {
+    const qrs = offOrphans.map((o) => o.qr).filter((q) => selFix.has(q));
+    if (!qrs.length || !editor.trim()) return;
+    setFixBusy(true); setFixErr(null);
+    try {
+      try { localStorage.setItem("nairn_editor", editor.trim()); } catch { /* ignore */ }
+      const r = await api.amendSale(qrs, { po: poFix.trim(), customer: custFix.trim(), markSold: true }, editor.trim());
+      setFixDone({ count: r.updated });
+      onSaved();   // reload — corrected boxes gain a Sold record and enter the pipeline
+    } catch (e) { setFixErr(e instanceof Error ? e.message : String(e)); }
+    finally { setFixBusy(false); }
+  }
+
   const poCols: Col[] = [
     { key: "po", label: "PO number" }, { key: "customer", label: "Customer" },
     { key: "boxes", label: "Boxes", num: true, fmt: fmtQty }, { key: "volume", label: "Volume (units)", num: true, fmt: fmtQty },
@@ -1320,6 +1353,79 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
 
   return (
     <>
+      {/* ── Correction queue: off-site boxes with no sales record ────────────── */}
+      {offOrphans.length > 0 && (
+        <Card className="border-t-4 border-t-danger"><CardBody>
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-danger">
+            <AlertTriangle size={18} /> {fmtNum(offOrphans.length)} off-site box(es) without a sales record
+          </div>
+          <div className="mb-3 text-xs text-muted">Moved Off-Site but never recorded as a sale. Select them, set the PO/customer, and mark them Sold — they&apos;ll then appear in the pipeline below. Fully audited.</div>
+          {fixDone ? (
+            <div className="flex items-center gap-2 rounded-xl border border-ok/40 bg-ok/10 p-3 text-sm font-medium text-ok">
+              <CheckCircle2 size={16} /> Marked {fixDone.count} box(es) sold — they now appear in the sales pipeline below.
+            </div>
+          ) : (
+            <>
+              <div className="mb-3 overflow-auto rounded-xl border border-border" style={{ maxHeight: "18rem" }}>
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-bg text-left text-xs uppercase tracking-wide text-muted">
+                    <tr>
+                      <th className="px-3 py-2"><input type="checkbox" checked={selFix.size === offOrphans.length && offOrphans.length > 0}
+                        onChange={(e) => setSelFix(e.target.checked ? new Set(offOrphans.map((o) => o.qr)) : new Set())} /></th>
+                      <th className="px-3 py-2 font-medium">Off-site</th>
+                      <th className="px-3 py-2 font-medium">Barcode</th>
+                      <th className="px-3 py-2 font-medium">Description</th>
+                      <th className="px-3 py-2 text-right font-medium">Qty</th>
+                      <th className="px-3 py-2 font-medium">PO</th>
+                      <th className="px-3 py-2 font-medium">Customer</th>
+                      <th className="px-3 py-2 font-medium">Moved by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {offOrphans.map((o) => (
+                      <tr key={o.qr} className="cursor-pointer border-t border-border hover:bg-bg/60" onClick={() => toggleFix(o.qr)}>
+                        <td className="px-3 py-2"><input type="checkbox" checked={selFix.has(o.qr)} onChange={() => toggleFix(o.qr)} onClick={(e) => e.stopPropagation()} /></td>
+                        <td className="whitespace-nowrap px-3 py-2 text-muted">{fmtTime(o.at)}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{o.qr}</td>
+                        <td className="px-3 py-2">{o.description}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtNum(o.qty)}</td>
+                        <td className="px-3 py-2">{o.po || "—"}</td>
+                        <td className="px-3 py-2">{o.customer || "—"}</td>
+                        <td className="px-3 py-2 text-muted">{o.movedBy || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">PO number</div>
+                  <input value={poFix} onChange={(e) => setPoFix(e.target.value)} placeholder="e.g. PO40149"
+                    className="w-48 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Customer</div>
+                  <input value={custFix} onChange={(e) => setCustFix(e.target.value)} placeholder="customer"
+                    className="w-48 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Your name / initials</div>
+                  <input value={editor} onChange={(e) => setEditor(e.target.value)} placeholder="for the audit log"
+                    className="w-40 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+                </div>
+                <button onClick={fixSave} disabled={fixBusy || !fixCount || !editor.trim() || !api.bolEnabled}
+                  className="rounded-lg border border-accent bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50">
+                  {fixBusy ? "Saving…" : `Mark sold & assign → ${fixCount} box(es)`}
+                </button>
+              </div>
+              {!api.bolEnabled && <div className="mt-2 text-xs text-warn">Write-back endpoint not configured (NEXT_PUBLIC_BOL_API) — correction disabled.</div>}
+              {fixErr && <div className="mt-2 flex items-center gap-2 text-sm text-danger"><AlertCircle size={15} /> {fixErr}</div>}
+              <div className="mt-3 text-xs text-muted">Writes a Sold record + PO/customer per selected box and logs it (STATUS_CHANGE / PO_UPDATE / CUSTOMER_UPDATE). Leave PO/customer blank to leave unchanged.</div>
+            </>
+          )}
+        </CardBody></Card>
+      )}
+
       <div className="text-sm text-muted">Showing {rangeLabel}</div>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat label="Volume sold" value={fmtNum(sum.volume)} sub="units" />
