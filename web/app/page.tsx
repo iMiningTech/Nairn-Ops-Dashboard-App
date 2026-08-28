@@ -1253,7 +1253,32 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
 // ── Sales History: sold boxes, PO rollup, volume — within the date range ─────
 function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate }:
   { items: InventoryItem[]; txns: Transaction[]; range: DateRange; rangeLabel: string; onSaved: () => void; onNavigate: (v: ViewId) => void }) {
-  const events = useMemo(() => saleEvents(items, txns), [items, txns]);
+  // This tab reads Inventory + Transactions LIVE (the gviz cache is unreliable
+  // for PO on this sheet). Scoped to this view with a 20s timeout + fallback to
+  // the gviz props, so it can NEVER hang or affect page loading elsewhere. Shows
+  // gviz data instantly, then upgrades to live when it arrives.
+  const [live, setLive] = useState<{ items: InventoryItem[]; txns: Transaction[] } | null>(null);
+  const [liveTick, setLiveTick] = useState(0);
+  const [liveLoading, setLiveLoading] = useState(false);
+  useEffect(() => {
+    if (!api.liveEnabled) return;
+    let cancelled = false;
+    setLiveLoading(true);
+    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 20000));
+    Promise.race([Promise.all([api.stockOnHandLive(), api.transactionsLive()]), timeout])
+      .then((res) => {
+        const [s, t] = res as [{ items: InventoryItem[] }, { items: Transaction[] }];
+        if (!cancelled) setLive({ items: s.items || [], txns: t.items || [] });
+      })
+      .catch(() => { /* keep gviz props */ })
+      .finally(() => { if (!cancelled) setLiveLoading(false); });
+    return () => { cancelled = true; };
+  }, [liveTick]);
+  const effItems = live?.items ?? items;
+  const effTxns = live?.txns ?? txns;
+  const refetchLive = () => setLiveTick((n) => n + 1);
+
+  const events = useMemo(() => saleEvents(effItems, effTxns), [effItems, effTxns]);
   const sum = useMemo(() => salesSummary(events, range.from, range.to), [events, range]);
 
   // Issued BOLs (loaded lazily) → map every box QR to the BOL it shipped on, so
@@ -1296,7 +1321,8 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
       try { localStorage.setItem("nairn_editor", editor.trim()); } catch { /* ignore */ }
       const r = await api.amendSale(targetQrs, { po: poInput.trim(), customer: custInput.trim() }, editor.trim());
       setDone({ count: r.updated, bols: bolsForQrs(targetQrs), po: !!poInput.trim() });
-      onSaved();   // reload feeds so the sale log + any reprint reflect the changes
+      refetchLive();   // pull the change back LIVE so it shows immediately
+      onSaved();       // also refresh parent feeds (BOL picker, etc.)
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }
@@ -1311,7 +1337,7 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
   const displayEvents = missingOnly ? baseEvents.filter(needsAttn) : baseEvents;
 
   // ── Off-site boxes WITHOUT a sales record — the correction queue ─────────────
-  const offOrphans = useMemo(() => offSiteWithoutSale(items, txns), [items, txns]);
+  const offOrphans = useMemo(() => offSiteWithoutSale(effItems, effTxns), [effItems, effTxns]);
   const offKey = offOrphans.map((o) => o.qr).join(",");
   const [selFix, setSelFix] = useState<Set<string>>(new Set());
   const [poFix, setPoFix] = useState("");
@@ -1338,7 +1364,8 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
       try { localStorage.setItem("nairn_editor", editor.trim()); } catch { /* ignore */ }
       const r = await api.amendSale(qrs, { po: poFix.trim(), customer: custFix.trim(), markSold: true }, editor.trim());
       setFixDone({ count: r.updated });
-      onSaved();   // reload — corrected boxes gain a Sold record and enter the pipeline
+      refetchLive();   // pull the change back LIVE so corrected boxes appear immediately
+      onSaved();       // also refresh parent feeds
     } catch (e) { setFixErr(e instanceof Error ? e.message : String(e)); }
     finally { setFixBusy(false); }
   }
@@ -1429,7 +1456,11 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
         </CardBody></Card>
       )}
 
-      <div className="text-sm text-muted">Showing {rangeLabel}</div>
+      <div className="flex items-center gap-2 text-sm text-muted">
+        Showing {rangeLabel}
+        {live ? <span className="rounded bg-ok/10 px-1.5 py-0.5 text-xs font-medium text-ok">live data</span>
+          : liveLoading ? <span className="text-xs">· loading live…</span> : null}
+      </div>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat label="Volume sold" value={fmtNum(sum.volume)} sub="units" />
         <Stat label="Boxes sold" value={fmtNum(sum.boxes)} />
