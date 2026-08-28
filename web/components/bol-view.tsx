@@ -92,6 +92,16 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     const n = new Set(s); const all = boxes.every((b) => n.has(b.qr));
     boxes.forEach((b) => all ? n.delete(b.qr) : n.add(b.qr)); return n;
   });
+  // Master "select all": every eligible box NOT already on a BOL (so a large
+  // collection is one click, and boxes already shipped aren't re-selected).
+  const selectable = useMemo(() => eligible.filter((b) => !usedQr.has(b.qr)), [eligible, usedQr]);
+  const allSelectableSelected = selectable.length > 0 && selectable.every((b) => sel.has(b.qr));
+  const toggleSelectAll = () => setSel((s) => {
+    const n = new Set(s);
+    if (selectable.every((b) => n.has(b.qr))) selectable.forEach((b) => n.delete(b.qr));
+    else selectable.forEach((b) => n.add(b.qr));
+    return n;
+  });
 
   function generate() {
     const shipTo = fields.shipTo.trim() || bol.customers.join(", ");
@@ -196,7 +206,17 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <Card className="xl:col-span-2"><CardBody>
-          <div className="mb-3 text-sm font-semibold text-fg">Select boxes for this collection</div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-fg">Select boxes for this collection</div>
+            <div className="flex items-center gap-3 text-xs">
+              {sel.size > 0 && <span className="text-muted">{fmtNum(sel.size)} selected</span>}
+              <label className="flex cursor-pointer items-center gap-1.5 font-medium text-fg">
+                <input type="checkbox" checked={allSelectableSelected} onChange={toggleSelectAll} disabled={!selectable.length} />
+                Select all{selectable.length ? ` (${fmtNum(selectable.length)})` : ""}
+              </label>
+              {sel.size > 0 && <button onClick={() => setSel(new Set())} className="underline text-muted hover:text-fg">clear</button>}
+            </div>
+          </div>
           {groups.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border py-8 text-center text-sm text-muted">No boxes are marked Sold yet. Scan + sell boxes in the app, then they appear here.</div>
           ) : (
