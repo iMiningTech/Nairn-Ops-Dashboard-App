@@ -221,29 +221,46 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
             <div className="rounded-xl border border-dashed border-border py-8 text-center text-sm text-muted">No boxes are marked Sold yet. Scan + sell boxes in the app, then they appear here.</div>
           ) : (
             <div className="max-h-[26rem] space-y-3 overflow-auto">
-              {groups.map(({ customer, boxes }) => (
+              {groups.map(({ customer, boxes }) => {
+                // Split each customer's boxes by PO so separate collections are
+                // distinguishable — each PO cluster gets its own select-all toggle.
+                const byPo = new Map<string, InventoryItem[]>();
+                for (const b of boxes) { const k = poForQr(b.qr) || "(no PO)"; if (!byPo.has(k)) byPo.set(k, []); byPo.get(k)!.push(b); }
+                const poGroups = Array.from(byPo, ([po, bs]) => ({ po, bs }))
+                  .sort((a, b) => (a.po === "(no PO)" ? 1 : 0) - (b.po === "(no PO)" ? 1 : 0) || a.po.localeCompare(b.po, undefined, { numeric: true }));
+                return (
                 <div key={customer} className="rounded-xl border border-border">
                   <label className="flex cursor-pointer items-center gap-2 border-b border-border bg-bg px-3 py-2 text-sm font-semibold text-fg">
                     <input type="checkbox" checked={boxes.every((b) => sel.has(b.qr))} onChange={() => toggleGroup(boxes)} />
-                    {customer} <span className="font-normal text-muted">· {boxes.length} box(es)</span>
+                    {customer} <span className="font-normal text-muted">· {boxes.length} box(es) · {poGroups.length} PO(s)</span>
                   </label>
-                  <div className="divide-y divide-border">
-                    {boxes.map((b) => {
-                      const used = usedQr.get(b.qr);
-                      return (
-                        <label key={b.qr} className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-bg/60">
-                          <input type="checkbox" checked={sel.has(b.qr)} onChange={() => toggle(b.qr)} />
-                          <span className="flex-1 truncate">{b.description || b.qr}</span>
-                          {used && <span className="shrink-0 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger" title="Already on a BOL">on {used}</span>}
-                          <span className="w-32 shrink-0 text-right text-xs text-muted" title="Marked Sold / set aside">{fmtTime(soldOn(b))}</span>
-                          <span className="w-16 shrink-0 text-right tabular-nums text-muted">{fmtNum(b.original_quantity)} u</span>
-                          <span className="hidden w-28 shrink-0 truncate text-right text-xs text-muted sm:inline">{b.qr}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                  {poGroups.map(({ po, bs }) => (
+                    <div key={po}>
+                      <label className="flex cursor-pointer items-center gap-2 border-b border-border bg-bg/50 px-3 py-1.5 pl-5 text-xs font-medium text-fg">
+                        <input type="checkbox" checked={bs.every((b) => sel.has(b.qr))} onChange={() => toggleGroup(bs)} />
+                        <span className={po === "(no PO)" ? "text-warn" : "text-accent"}>PO {po}</span>
+                        <span className="font-normal text-muted">· {bs.length} box(es) · {fmtNum(bs.reduce((s, b) => s + b.original_quantity, 0))} u</span>
+                      </label>
+                      <div className="divide-y divide-border">
+                        {bs.map((b) => {
+                          const used = usedQr.get(b.qr);
+                          return (
+                            <label key={b.qr} className="flex cursor-pointer items-center gap-2 px-3 py-1.5 pl-8 text-sm hover:bg-bg/60">
+                              <input type="checkbox" checked={sel.has(b.qr)} onChange={() => toggle(b.qr)} />
+                              <span className="flex-1 truncate">{b.description || b.qr}</span>
+                              {used && <span className="shrink-0 rounded bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium text-danger" title="Already on a BOL">on {used}</span>}
+                              <span className="w-32 shrink-0 text-right text-xs text-muted" title="Marked Sold / set aside">{fmtTime(soldOn(b))}</span>
+                              <span className="w-16 shrink-0 text-right tabular-nums text-muted">{fmtNum(b.original_quantity)} u</span>
+                              <span className="hidden w-28 shrink-0 truncate text-right text-xs text-muted sm:inline">{b.qr}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardBody></Card>
