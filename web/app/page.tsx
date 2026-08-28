@@ -1298,6 +1298,15 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
     finally { setBusy(false); }
   }
 
+  // Orphaned sales (missing PO or customer) across ALL dates — so they're
+  // discoverable even when sold outside the current date-range filter.
+  const needsAttn = (e: SaleEvent) => !String(e.po ?? "").trim() || !String(e.customer ?? "").trim();
+  const orphansAll = useMemo(() => events.filter(needsAttn), [events]);
+  const [showAll, setShowAll] = useState(false);
+  const [missingOnly, setMissingOnly] = useState(false);
+  const baseEvents = showAll ? events : sum.events;
+  const displayEvents = missingOnly ? baseEvents.filter(needsAttn) : baseEvents;
+
   const poCols: Col[] = [
     { key: "po", label: "PO number" }, { key: "customer", label: "Customer" },
     { key: "boxes", label: "Boxes", num: true, fmt: fmtQty }, { key: "volume", label: "Volume (units)", num: true, fmt: fmtQty },
@@ -1318,6 +1327,21 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
         <Stat label="PO numbers" value={sum.byPo.length} />
         <Stat label="Customers" value={sum.customers.length} sub={sum.customers.join(", ") || "—"} />
       </div>
+
+      {orphansAll.length > 0 && !(showAll && missingOnly) && (
+        <Card className="border-t-4 border-t-warn"><CardBody>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-warn">
+              <AlertTriangle size={18} /> {fmtNum(orphansAll.length)} sold box(es) across all dates are missing a PO or customer.
+            </div>
+            <button onClick={() => { setShowAll(true); setMissingOnly(true); }}
+              className="rounded-lg border border-warn bg-warn/10 px-3 py-1.5 text-xs font-medium text-warn hover:bg-warn/20">
+              Review all missing (ignore date filter)
+            </button>
+          </div>
+          <div className="mt-1 text-xs text-muted">These may be outside the current date range. Reviewing shows every sale missing a PO or customer, regardless of the sidebar dates.</div>
+        </CardBody></Card>
+      )}
 
       <Card><CardBody>
         <div className="mb-3 text-sm font-semibold text-fg">Sales by PO</div>
@@ -1389,15 +1413,23 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
       )}
 
       <Card><CardBody>
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-fg">Sale log ({fmtNum(sum.boxes)} boxes)</div>
-            <div className="text-xs text-muted">Click a row to add or amend its PO number &amp; customer. Amber = missing PO or customer.</div>
+            <div className="text-sm font-semibold text-fg">Sale log ({fmtNum(displayEvents.length)} boxes)</div>
+            <div className="text-xs text-muted">Click a row to add or amend its PO number &amp; customer. Amber = missing PO or customer. {showAll ? "Showing all dates." : `Showing ${rangeLabel}.`}</div>
           </div>
-          <button onClick={() => csvDownload(`sales_${today()}.csv`, logCols, sum.events.map((e) => ({ ...e, at: fmtTime(e.at) })))}
-            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <label className="flex cursor-pointer items-center gap-1.5 text-fg">
+              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> all dates
+            </label>
+            <label className="flex cursor-pointer items-center gap-1.5 text-fg">
+              <input type="checkbox" checked={missingOnly} onChange={(e) => setMissingOnly(e.target.checked)} /> only missing PO/customer
+            </label>
+            <button onClick={() => csvDownload(`sales_${today()}.csv`, logCols, displayEvents.map((e) => ({ ...e, at: fmtTime(e.at) })))}
+              className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 hover:bg-bg"><Download size={14} /> CSV</button>
+          </div>
         </div>
-        <Grid cols={logCols} rows={sum.events as unknown as Record<string, unknown>[]} maxH="30rem"
+        <Grid cols={logCols} rows={displayEvents as unknown as Record<string, unknown>[]} maxH="30rem"
           onRowClick={(r) => openAmend(r as unknown as SaleEvent)}
           activeRow={(r) => !!amend && r.qr === amend.qr && r.at === amend.at}
           tone={(r) => (String(r.po ?? "").trim() && String(r.customer ?? "").trim() ? undefined : "warn")} />
