@@ -9,10 +9,14 @@ import { Card, CardBody, Stat } from "@/components/ui";
 import { fmtNum, fmtDate, fmtTime } from "@/lib/utils";
 
 const CONSIGNOR_FROM = "Nairn Det Plant";
+const CONSIGNOR_SIGNER = "Justin James";
+// Transparent PNG of the consignor's signature — place at web/public/consignor_sig.png.
+const CONSIGNOR_SIG_URL = "/consignor_sig.png";
 
 type DocState = {
   bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string;
   consignor: string; driver: string; signatureUrl: string; includeNeq: boolean; qrs: string[]; issued: boolean;
+  receiverDate: string; consignorSigUrl: string; consignorDate: string;
 };
 
 const poNorm = (s: string) => s.trim().toUpperCase();
@@ -63,7 +67,8 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
   const poFor = (i: InventoryItem) => i.po_number || poByQr.get(i.qr) || "";
 
   const [sel, setSel] = useState<Set<string>>(new Set());
-  const [fields, setFields] = useState({ date: fmtDate(new Date().toISOString()), shipTo: "", truck: "", trailer: "", consignor: "", driver: "", signatureUrl: "" });
+  const [fields, setFields] = useState({ date: fmtDate(new Date().toISOString()), shipTo: "", truck: "", trailer: "", consignor: "", driver: "", signatureUrl: "", receiverDate: "" });
+  const [consignorSign, setConsignorSign] = useState(() => { try { return localStorage.getItem("nairn_consignor_sign") === "1"; } catch { return false; } });
   const [includeNeq, setIncludeNeq] = useState(false);
   const [doc, setDoc] = useState<DocState | null>(null);
   const [registering, setRegistering] = useState(false);
@@ -84,8 +89,8 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
   const matchPos = useMemo(() => Array.from(new Set(matchingSigs.map((s) => s.po_number))), [matchingSigs]);
 
   const applySignature = (s: Signature) =>
-    setFields((f) => ({ ...f, driver: s.receiver_name || f.driver, signatureUrl: s.drive_url }));
-  const clearSignature = () => setFields((f) => ({ ...f, signatureUrl: "" }));
+    setFields((f) => ({ ...f, driver: s.receiver_name || f.driver, signatureUrl: s.drive_url, receiverDate: s.timestamp ? fmtDate(s.timestamp) : f.receiverDate }));
+  const clearSignature = () => setFields((f) => ({ ...f, signatureUrl: "", receiverDate: "" }));
 
   const toggle = (qr: string) => setSel((s) => { const n = new Set(s); n.has(qr) ? n.delete(qr) : n.add(qr); return n; });
   const toggleGroup = (boxes: InventoryItem[]) => setSel((s) => {
@@ -113,8 +118,12 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     const shipTo = fields.shipTo.trim() || bol.customers.join(", ");
     const po = Array.from(new Set(selectedBoxes.map(poFor).filter(Boolean))).join(", ");
     setRegError(null);
+    const consignor = consignorSign && !fields.consignor.trim() ? CONSIGNOR_SIGNER : fields.consignor;
+    // Consignor date mirrors the consignee's signed date when there is one, else the document date.
+    const consignorDate = consignorSign ? (fields.receiverDate || fields.date) : "";
     setDoc({ bol, number: draftNo, date: fields.date, po, shipTo, truck: fields.truck, trailer: fields.trailer,
-      consignor: fields.consignor, driver: fields.driver, signatureUrl: fields.signatureUrl, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false });
+      consignor, driver: fields.driver, signatureUrl: fields.signatureUrl, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false,
+      receiverDate: fields.receiverDate, consignorSigUrl: consignorSign ? CONSIGNOR_SIG_URL : "", consignorDate });
   }
 
   async function registerAndPrint() {
@@ -144,8 +153,14 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
       classes: r.classes.split(",").map((s) => s.trim()).filter(Boolean), customers: [] };
     const qrs = r.box_qrs.split(",").map((s) => s.trim()).filter(Boolean);
     const po = Array.from(new Set(qrs.map(poForQr).filter(Boolean))).join(", ");
+    // Recover the receiver's signed date from the matching captured signature.
+    const sig = r.signature_url ? signatures.find((s) => s.drive_url && s.drive_url === r.signature_url) : undefined;
+    const receiverDate = sig?.timestamp ? fmtDate(sig.timestamp) : "";
+    const consignor = r.consignor_name || (consignorSign ? CONSIGNOR_SIGNER : "");
+    const consignorDate = consignorSign ? (receiverDate || r.date) : "";
     setDoc({ bol: bolObj, number: r.bol_no, date: r.date, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
-      consignor: r.consignor_name, driver: r.driver_name, signatureUrl: r.signature_url, includeNeq: r.include_neq, qrs, issued: true });
+      consignor, driver: r.driver_name, signatureUrl: r.signature_url, includeNeq: r.include_neq, qrs, issued: true,
+      receiverDate, consignorSigUrl: consignorSign ? CONSIGNOR_SIG_URL : "", consignorDate });
   }
 
   // Body flag for print isolation + filename via document.title.
@@ -297,6 +312,14 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
               </div>
             )}
             <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs text-muted">
+              <input type="checkbox" checked={consignorSign}
+                onChange={(e) => {
+                  const on = e.target.checked; setConsignorSign(on);
+                  try { localStorage.setItem("nairn_consignor_sign", on ? "1" : "0"); } catch { /* ignore */ }
+                  if (on && !fields.consignor.trim()) setFields((f) => ({ ...f, consignor: CONSIGNOR_SIGNER }));
+                }} /> sign as consignor ({CONSIGNOR_SIGNER})
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs text-muted">
               <input type="checkbox" checked={includeNeq} onChange={(e) => setIncludeNeq(e.target.checked)} /> include Total NEQ on the document
             </label>
           </div>
@@ -362,7 +385,7 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
               <button onClick={() => setDoc(null)} className="flex items-center gap-1 rounded-lg border border-white/30 px-3 py-1.5"><X size={15} /> Close</button>
             </span>
           </div>
-          <BolDocument bol={doc.bol} number={doc.number} date={doc.date} po={doc.po} shipTo={doc.shipTo} truck={doc.truck} trailer={doc.trailer} consignor={doc.consignor} driver={doc.driver} signatureUrl={doc.signatureUrl} includeNeq={doc.includeNeq} />
+          <BolDocument bol={doc.bol} number={doc.number} date={doc.date} po={doc.po} shipTo={doc.shipTo} truck={doc.truck} trailer={doc.trailer} consignor={doc.consignor} driver={doc.driver} signatureUrl={doc.signatureUrl} includeNeq={doc.includeNeq} receiverDate={doc.receiverDate} consignorSigUrl={doc.consignorSigUrl} consignorDate={doc.consignorDate} />
         </div>,
         document.body
       )}
@@ -379,8 +402,8 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
   );
 }
 
-function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor, driver, signatureUrl, includeNeq }:
-  { bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string; consignor: string; driver: string; signatureUrl: string; includeNeq: boolean }) {
+function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor, driver, signatureUrl, includeNeq, receiverDate, consignorSigUrl, consignorDate }:
+  { bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string; consignor: string; driver: string; signatureUrl: string; includeNeq: boolean; receiverDate: string; consignorSigUrl: string; consignorDate: string }) {
   const placard = (c: string) => bol.classes.includes(c);
   return (
     <div className="bol-doc">
@@ -475,7 +498,18 @@ function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor,
         <div className="s">
           <div className="role">Consignor</div>
           <div className="sigline"><div className="l"><div className="cap">Print name</div><div className="u">{consignor}</div></div></div>
-          <div className="sigline"><div className="l"><div className="cap">Signature</div><div className="u"></div></div><div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u"></div></div></div>
+          <div className="sigline">
+            <div className="l">
+              <div className="cap">Signature</div>
+              {consignorSigUrl ? (
+                <div className="u sig">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="sig-img" src={consignorSigUrl} alt="Consignor signature" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                </div>
+              ) : <div className="u"></div>}
+            </div>
+            <div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u">{consignorDate}</div></div>
+          </div>
         </div>
         <div className="s">
           <div className="role">Driver / carrier / consignee</div>
@@ -490,7 +524,7 @@ function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor,
                 </div>
               ) : <div className="u"></div>}
             </div>
-            <div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u"></div></div>
+            <div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u">{receiverDate}</div></div>
           </div>
         </div>
       </div>
