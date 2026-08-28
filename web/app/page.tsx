@@ -1264,35 +1264,36 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
   }, [bols]);
   const bolsForQrs = (qrs: string[]) => Array.from(new Set(qrs.map((q) => bolByQr.get(q)).filter(Boolean) as string[]));
 
-  // Boxes sold together with the clicked box: same customer + same day, sharing
-  // its PO state (all missing, or all the same PO being corrected). Includes it.
+  // Boxes sold together with the clicked box: same day, sharing its current
+  // customer AND PO state (e.g. all missing both). Includes the clicked box.
   const siblings = (e: SaleEvent) => events.filter((x) =>
-    dateKey(x.at) === dateKey(e.at) && (x.customer || "") === (e.customer || "") && (e.po ? x.po === e.po : !x.po));
+    dateKey(x.at) === dateKey(e.at) && (x.customer || "") === (e.customer || "") && (x.po || "") === (e.po || ""));
 
-  // ── PO amendment panel state ────────────────────────────────────────────────
+  // ── Sale-amendment panel state (PO + customer) ──────────────────────────────
   const [amend, setAmend] = useState<SaleEvent | null>(null);
   const [poInput, setPoInput] = useState("");
+  const [custInput, setCustInput] = useState("");
   const [applyBatch, setApplyBatch] = useState(true);
   const [editor, setEditor] = useState(() => { try { return localStorage.getItem("nairn_editor") || ""; } catch { return ""; } });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState<{ count: number; bols: string[] } | null>(null);
+  const [done, setDone] = useState<{ count: number; bols: string[]; po: boolean } | null>(null);
 
   function openAmend(e: SaleEvent) {
-    setAmend(e); setPoInput(e.po || ""); setApplyBatch(true); setErr(null); setDone(null);
+    setAmend(e); setPoInput(e.po || ""); setCustInput(e.customer || ""); setApplyBatch(true); setErr(null); setDone(null);
   }
   function closeAmend() { setAmend(null); setDone(null); setErr(null); }
 
   const targetQrs = amend ? (applyBatch ? Array.from(new Set(siblings(amend).map((s) => s.qr))) : [amend.qr]) : [];
 
   async function save() {
-    if (!amend || !poInput.trim() || !editor.trim()) return;
+    if (!amend || (!poInput.trim() && !custInput.trim()) || !editor.trim()) return;
     setBusy(true); setErr(null);
     try {
       try { localStorage.setItem("nairn_editor", editor.trim()); } catch { /* ignore */ }
-      const r = await api.updatePo(targetQrs, poInput.trim(), editor.trim());
-      setDone({ count: r.updated, bols: bolsForQrs(targetQrs) });
-      onSaved();   // reload feeds so the sale log + any reprint reflect the new PO
+      const r = await api.amendSale(targetQrs, { po: poInput.trim(), customer: custInput.trim() }, editor.trim());
+      setDone({ count: r.updated, bols: bolsForQrs(targetQrs), po: !!poInput.trim() });
+      onSaved();   // reload feeds so the sale log + any reprint reflect the changes
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }
@@ -1305,7 +1306,7 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
     { key: "at", label: "Sold", fmt: fmtTs }, { key: "qr", label: "Barcode" }, { key: "description", label: "Description" },
     { key: "product", label: "Product" }, { key: "qty", label: "Qty", num: true, fmt: fmtQty },
     { key: "po", label: "PO", fmt: (v) => (String(v ?? "").trim() ? String(v) : "— add —") },
-    { key: "customer", label: "Customer" },
+    { key: "customer", label: "Customer", fmt: (v) => (String(v ?? "").trim() ? String(v) : "— add —") },
   ];
 
   return (
@@ -1327,7 +1328,7 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
       {amend && (
         <Card className="border-t-4 border-t-accent"><CardBody>
           <div className="mb-3 flex items-center justify-between">
-            <div className="text-sm font-semibold text-fg">Amend PO — <span className="font-mono">{amend.qr}</span></div>
+            <div className="text-sm font-semibold text-fg">Amend sale (PO &amp; customer) — <span className="font-mono">{amend.qr}</span></div>
             <button onClick={closeAmend} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-bg"><X size={14} /> Close</button>
           </div>
           <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm md:grid-cols-4">
@@ -1341,13 +1342,13 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
 
           {done ? (
             <div className="rounded-xl border border-ok/40 bg-ok/10 p-4 text-sm">
-              <div className="flex items-center gap-2 font-semibold text-ok"><CheckCircle2 size={16} /> PO set to “{poInput.trim()}” on {done.count} box(es).</div>
-              {done.bols.length > 0 ? (
+              <div className="flex items-center gap-2 font-semibold text-ok"><CheckCircle2 size={16} /> Updated {done.count} box(es){poInput.trim() ? ` · PO “${poInput.trim()}”` : ""}{custInput.trim() ? ` · customer “${custInput.trim()}”` : ""}.</div>
+              {done.po && done.bols.length > 0 ? (
                 <div className="mt-2 text-fg">
                   {done.bols.join(", ")} already shipped these boxes. Reprint from the Bill of Lading tab to pick up the new PO — the document derives it live from the boxes.
                   <div className="mt-2"><button onClick={() => onNavigate("bol")} className="inline-flex items-center gap-1 rounded-lg border border-accent bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"><FileText size={13} /> Go to Bill of Lading</button></div>
                 </div>
-              ) : <div className="mt-1 text-muted">No issued BOL references these boxes.</div>}
+              ) : done.count === 0 ? <div className="mt-1 text-muted">Nothing to change — those values were already set.</div> : null}
             </div>
           ) : (
             <>
@@ -1358,25 +1359,30 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
                     className="w-56 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
                 </div>
                 <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Customer</div>
+                  <input value={custInput} onChange={(e) => setCustInput(e.target.value)} placeholder="customer name"
+                    className="w-56 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+                </div>
+                <div>
                   <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Your name / initials</div>
                   <input value={editor} onChange={(e) => setEditor(e.target.value)} placeholder="for the audit log"
                     className="w-44 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
                 </div>
-                <button onClick={save} disabled={busy || !poInput.trim() || !editor.trim() || !api.bolEnabled}
+                <button onClick={save} disabled={busy || (!poInput.trim() && !custInput.trim()) || !editor.trim() || !api.bolEnabled}
                   className="rounded-lg border border-accent bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50">
-                  {busy ? "Saving…" : `Save PO to ${targetQrs.length} box(es)`}
+                  {busy ? "Saving…" : `Save to ${targetQrs.length} box(es)`}
                 </button>
               </div>
               <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-fg">
                 <input type="checkbox" checked={applyBatch} onChange={(e) => setApplyBatch(e.target.checked)} />
-                Apply to all boxes sold in this batch ({siblings(amend).length} box(es): same customer &amp; day{amend.po ? ", same PO" : ", currently no PO"})
+                Apply to all boxes sold in this batch ({siblings(amend).length} box(es): same day, same current customer &amp; PO)
               </label>
-              {bolsForQrs(targetQrs).length > 0 && (
+              {poInput.trim() && bolsForQrs(targetQrs).length > 0 && (
                 <div className="mt-2 text-xs text-warn">Heads-up: {bolsForQrs(targetQrs).join(", ")} already shipped {targetQrs.length > 1 ? "some of these boxes" : "this box"} — you&apos;ll be prompted to reprint after saving.</div>
               )}
               {!api.bolEnabled && <div className="mt-2 text-xs text-warn">Write-back endpoint not configured (NEXT_PUBLIC_BOL_API) — amendment is disabled.</div>}
               {err && <div className="mt-2 flex items-center gap-2 text-sm text-danger"><AlertCircle size={15} /> {err}</div>}
-              <div className="mt-3 text-xs text-muted">Writes the PO to inventory and logs an audited PO_UPDATE for each box.</div>
+              <div className="mt-3 text-xs text-muted">Writes to inventory and logs an audited PO_UPDATE / CUSTOMER_UPDATE per changed box. Leave a field blank to leave it unchanged.</div>
             </>
           )}
         </CardBody></Card>
@@ -1386,7 +1392,7 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
         <div className="mb-3 flex items-center justify-between">
           <div>
             <div className="text-sm font-semibold text-fg">Sale log ({fmtNum(sum.boxes)} boxes)</div>
-            <div className="text-xs text-muted">Click a row to add or amend its PO number.</div>
+            <div className="text-xs text-muted">Click a row to add or amend its PO number &amp; customer. Amber = missing PO or customer.</div>
           </div>
           <button onClick={() => csvDownload(`sales_${today()}.csv`, logCols, sum.events.map((e) => ({ ...e, at: fmtTime(e.at) })))}
             className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
@@ -1394,7 +1400,7 @@ function SalesHistoryView({ items, txns, range, rangeLabel, onSaved, onNavigate 
         <Grid cols={logCols} rows={sum.events as unknown as Record<string, unknown>[]} maxH="30rem"
           onRowClick={(r) => openAmend(r as unknown as SaleEvent)}
           activeRow={(r) => !!amend && r.qr === amend.qr && r.at === amend.at}
-          tone={(r) => (String(r.po ?? "").trim() ? undefined : "warn")} />
+          tone={(r) => (String(r.po ?? "").trim() && String(r.customer ?? "").trim() ? undefined : "warn")} />
       </CardBody></Card>
     </>
   );
