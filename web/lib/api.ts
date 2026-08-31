@@ -123,6 +123,24 @@ export type QcCheck = {
 };
 export type Decon = { at: string; line: string; hmx_spill: boolean };
 
+// ── Maintenance / breakdown tickets (new BlastStock ticketing) ───────────────
+// Tickets tab = one row per ticket (current state); Ticket_Events = append-only
+// audit trail. Replaces the old JotForm breakdown sheets for the Breakdowns tab.
+export type Ticket = {
+  id: string; line: string; line_detail: string; title: string; description: string;
+  severity: string; status: string;
+  created_by: string; created_at: string | null;
+  assigned_to: string; assigned_at: string | null;
+  closed_by: string; closed_at: string | null; resolution: string;
+  parts_count: number; photo_count: number; reopen_count: number;
+  last_updated_at: string | null; last_updated_by: string;
+};
+export type TicketEvent = {
+  timestamp: string | null; ticket_id: string; event_type: string; user: string;
+  from_value: string; to_value: string; notes: string; photo_url: string;
+  part_qr: string; part_description: string; qty_used: number; correlation_id: string;
+};
+
 // Reference / cheat-sheet data for the Capabilities tab.
 export type ManufacturableLength = { line: string; length_display: string; length_numeric: number; active: boolean };
 // Editable Manufacturing_Reference tab: rows grouped by Section.
@@ -269,6 +287,27 @@ function mapQc(r: Record<string, string>): QcCheck {
 function mapDecon(r: Record<string, string>): Decon {
   const hmx = Object.entries(r).some(([k, v]) => k.includes("HMX powder spill") && String(v).trim() !== "");
   return { at: r["Submission Date"] || r["Date & Time"] || "", line: "ViperDet", hmx_spill: hmx };
+}
+
+function mapTicket(r: Record<string, string>): Ticket {
+  return {
+    id: r["Ticket_ID"] ?? "", line: r["Line"] ?? "", line_detail: r["Line_Detail"] ?? "",
+    title: r["Title"] ?? "", description: r["Description"] ?? "",
+    severity: r["Severity"] ?? "", status: r["Status"] ?? "",
+    created_by: r["Created_By"] ?? "", created_at: orNull(r["Created_At"]),
+    assigned_to: r["Assigned_To"] ?? "", assigned_at: orNull(r["Assigned_At"]),
+    closed_by: r["Closed_By"] ?? "", closed_at: orNull(r["Closed_At"]), resolution: r["Resolution"] ?? "",
+    parts_count: toNum(r["Parts_Count"]), photo_count: toNum(r["Photo_Count"]), reopen_count: toNum(r["Reopen_Count"]),
+    last_updated_at: orNull(r["Last_Updated_At"]), last_updated_by: r["Last_Updated_By"] ?? "",
+  };
+}
+function mapTicketEvent(r: Record<string, string>): TicketEvent {
+  return {
+    timestamp: orNull(r["Timestamp"]), ticket_id: r["Ticket_ID"] ?? "", event_type: r["Event_Type"] ?? "",
+    user: r["User"] ?? "", from_value: r["From_Value"] ?? "", to_value: r["To_Value"] ?? "",
+    notes: r["Notes"] ?? "", photo_url: r["Photo_URL"] ?? "", part_qr: r["Part_QR"] ?? "",
+    part_description: r["Part_Description"] ?? "", qty_used: toNum(r["Qty_Used"]), correlation_id: r["Correlation_ID"] ?? "",
+  };
 }
 
 function mapInventoryRow(r: Record<string, string>): InventoryItem {
@@ -456,6 +495,19 @@ export const api = {
   async batchContents(): Promise<{ items: BatchContent[] }> {
     if (MODE === "gviz") return { items: (await gvizTab("NDT_Batch_Contents")).map(mapBatchContentRow).filter((c) => c.batch_qr) };
     return getJson<{ items: BatchContent[] }>("batchContents");
+  },
+  // Maintenance/breakdown tickets (Tickets + Ticket_Events tabs). Tolerate absence.
+  async tickets(): Promise<{ items: Ticket[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Tickets")).map(mapTicket).filter((t) => t.id) };
+      return await getJson<{ items: Ticket[] }>("tickets");
+    } catch { return { items: [] }; }
+  },
+  async ticketEvents(): Promise<{ items: TicketEvent[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Ticket_Events")).map(mapTicketEvent).filter((e) => e.ticket_id) };
+      return await getJson<{ items: TicketEvent[] }>("ticketEvents");
+    } catch { return { items: [] }; }
   },
   async manufacturableLengths(): Promise<{ items: ManufacturableLength[] }> {
     try {

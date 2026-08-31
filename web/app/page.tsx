@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -24,6 +24,7 @@ import {
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
+import { ticketRows, ticketMetrics, fmtHours, OPEN_STATUSES, type TicketRow } from "@/lib/tickets";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType, weighWaste } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
@@ -111,6 +112,8 @@ export default function Dashboard() {
   const [batchContents, setBatchContents] = useState<BatchContent[]>([]);
   const [lengths, setLengths] = useState<ManufacturableLength[]>([]);
   const [reference, setReference] = useState<RefRow[]>([]);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([]);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +139,7 @@ export default function Dashboard() {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr] = await Promise.all([
+      const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr, tk, te] = await Promise.all([
         api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
@@ -146,6 +149,8 @@ export default function Dashboard() {
         api.batchContents().catch(() => ({ items: [] as BatchContent[] })),
         api.manufacturableLengths().catch(() => ({ items: [] as ManufacturableLength[] })),
         api.manufacturingReference().catch(() => ({ items: [] as RefRow[] })),
+        api.tickets().catch(() => ({ items: [] as Ticket[] })),
+        api.ticketEvents().catch(() => ({ items: [] as TicketEvent[] })),
       ]);
       setItems(stock.items || []);
       setTxns(tx.items || []);
@@ -157,6 +162,8 @@ export default function Dashboard() {
       setBatchContents(bcs.items || []);
       setLengths(ml.items || []);
       setReference(mr.items || []);
+      setTickets(tk.items || []);
+      setTicketEvents(te.items || []);
       setGeneratedAt(stock.generated_at);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -273,7 +280,7 @@ export default function Dashboard() {
               {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} month={hi.slice(0, 7)} />}
               {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} breakdowns={breakdowns} qc={qc} contents={batchContents} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
-              {view === "breakdowns" && <BreakdownsView breakdowns={breakdowns} range={range} rangeLabel={rangeLabel} />}
+              {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
               {view === "financial" && <FinancialLookupView items={items} />}
@@ -752,57 +759,96 @@ function MonthlyExportView({ items, txns, users, targets, breakdowns, qc, conten
   );
 }
 
-// ── BREAKDOWNS ───────────────────────────────────────────────────────────────
-function BreakdownsView({ breakdowns, range, rangeLabel }: { breakdowns: Breakdown[]; range: DateRange; rangeLabel: string }) {
-  const [line, setLine] = useState<"All" | "ViperDet" | "Axxis">("All");
-  const rows = useMemo(() => breakdowns
-    .filter((b) => (line === "All" || b.line === line) && (() => { const k = logDayKey(b.at); return k >= range.from && k <= range.to; })())
-    .slice().sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0)), [breakdowns, line, range]);
-  const totalDowntime = rows.reduce((s, b) => s + b.duration_min, 0);
-  const byStation = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const b of rows) m.set(b.station || "—", (m.get(b.station || "—") || 0) + 1);
-    return Array.from(m, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 12);
-  }, [rows]);
-  const critical = rows.filter((b) => b.nature === "Critical Breakdown").length;
+// ── BREAKDOWNS (maintenance tickets) ─────────────────────────────────────────
+function BreakdownsView({ tickets, events, range, rangeLabel }:
+  { tickets: Ticket[]; events: TicketEvent[]; range: DateRange; rangeLabel: string }) {
+  const [line, setLine] = useState<"All" | "ViperDet" | "Axxis" | "Other">("All");
+  const [scope, setScope] = useState<"raised" | "open" | "all">("raised");
+
+  const allRows = useMemo(() => ticketRows(tickets, events), [tickets, events]);
+  const m = useMemo(() => ticketMetrics(tickets, events, range.from, range.to), [tickets, events, range]);
+
+  const inCreated = (t: TicketRow) => { const k = dateKey(t.created_at || ""); return !!k && k >= range.from && k <= range.to; };
+  const rows = useMemo(() => allRows.filter((t) =>
+    (line === "All" || t.line === line) &&
+    (scope === "all" ? true : scope === "open" ? OPEN_STATUSES.includes(t.status) : inCreated(t))
+  ), [allRows, line, scope, range]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const scopeLabel = scope === "open" ? "open now" : scope === "all" ? "all time" : rangeLabel;
 
   const cols: Col[] = [
-    { key: "at", label: "When", fmt: (v) => fmtTime(String(v)) },
-    { key: "line", label: "Line" }, { key: "station", label: "Station" },
-    { key: "nature", label: "Nature" }, { key: "duration_min", label: "Mins", num: true, fmt: fmtQty },
-    { key: "personnel", label: "By" }, { key: "info", label: "Detail" },
+    { key: "id", label: "Ticket" }, { key: "line_full", label: "Line" }, { key: "title", label: "Title" },
+    { key: "severity", label: "Severity" }, { key: "status", label: "Status" },
+    { key: "created_at", label: "Created", fmt: fmtTs }, { key: "created_by", label: "By" },
+    { key: "assigned_to", label: "Assigned", fmt: (v) => (String(v ?? "").trim() || "—") },
+    { key: "resolve_hours", label: "Resolve", num: true, fmt: (v) => fmtHours(v as number | null) },
+    { key: "first_response_hours", label: "1st resp", num: true, fmt: (v) => fmtHours(v as number | null) },
+    { key: "resolution", label: "Resolution" },
   ];
+  const exportCols: Col[] = [
+    { key: "id", label: "Ticket_ID" }, { key: "line", label: "Line" }, { key: "line_detail", label: "Line_Detail" },
+    { key: "title", label: "Title" }, { key: "description", label: "Description" }, { key: "severity", label: "Severity" },
+    { key: "status", label: "Status" }, { key: "created_by", label: "Created_By" }, { key: "created_at", label: "Created_At" },
+    { key: "assigned_to", label: "Assigned_To" }, { key: "closed_by", label: "Closed_By" }, { key: "closed_at", label: "Closed_At" },
+    { key: "resolution", label: "Resolution" }, { key: "resolve_hours", label: "Resolve_Hours" }, { key: "first_response_hours", label: "First_Response_Hours" },
+    { key: "parts_count", label: "Parts_Count" }, { key: "reopen_count", label: "Reopen_Count" },
+  ];
+  const exportRows = () => csvDownload(`breakdown_tickets_${today()}.csv`, exportCols, rows.map((r) => ({
+    ...r, created_at: fmtTime(r.created_at), closed_at: fmtTime(r.closed_at),
+    resolve_hours: r.resolve_hours != null ? r.resolve_hours.toFixed(1) : "",
+    first_response_hours: r.first_response_hours != null ? r.first_response_hours.toFixed(1) : "",
+  })));
 
   return (
     <>
-      <div className="flex items-center justify-between">
-        <div className="flex gap-1.5">
-          {(["All", "ViperDet", "Axxis"] as const).map((l) => (
-            <button key={l} onClick={() => setLine(l)}
-              className={`rounded-lg border px-3 py-1.5 text-sm ${line === l ? "border-accent bg-accent font-semibold text-white" : "border-border bg-surface hover:bg-bg"}`}>{l}</button>
-          ))}
-        </div>
-        <span className="text-sm text-muted">{breakdowns.length === 0 ? "No breakdown data loaded." : `Showing ${rangeLabel}`}</span>
-      </div>
-
+      {/* Current-state tiles (live, not range-bound) */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Breakdowns" value={fmtNum(rows.length)} />
-        <Stat label="Total downtime" value={fmtMins(totalDowntime)} />
-        <Stat label="Critical" value={critical} status={critical ? "bad" : "ok"} />
-        <Stat label="Avg per breakdown" value={rows.length ? fmtMins(totalDowntime / rows.filter((b) => b.duration_min > 0).length || 0) : "—"} />
+        <Stat label="Open tickets" value={fmtNum(m.openTotal)} status={m.openTotal ? "warn" : "ok"} sub="Open · In Progress · Awaiting" />
+        <Stat label="In progress" value={fmtNum(m.inProgress)} />
+        <Stat label="Awaiting parts" value={fmtNum(m.awaitingParts)} status={m.awaitingParts ? "warn" : "ok"} />
+        <Stat label="Open Critical / High" value={fmtNum(m.openCriticalHigh)} status={m.openCriticalHigh ? "bad" : "ok"} />
+      </div>
+      {/* Period tiles (follow the date slicer) */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label="Raised" value={fmtNum(m.raised)} sub={rangeLabel} />
+        <Stat label="Closed" value={fmtNum(m.closed)} sub={`${rangeLabel}${m.cancelled ? ` · ${m.cancelled} cancelled` : ""}`} />
+        <Stat label="Avg time to resolve" value={fmtHours(m.avgResolveHours)} sub="closed in range" />
+        <Stat label="Avg first response" value={fmtHours(m.avgFirstResponseHours)} sub="raise → first assign" />
       </div>
 
-      <ChartCard title="Breakdowns by station" subtitle="Count (top 12)">
-        <BarH data={byStation} height={Math.max(240, byStation.length * 28)} />
+      <ChartCard title="Tickets by status" subtitle="Current state, all tickets">
+        <BarH data={m.byStatus} height={Math.max(200, m.byStatus.length * 30)} />
       </ChartCard>
 
       <Card><CardBody>
-        <div className="mb-3 flex items-center justify-between">
-          <div className="text-sm font-semibold text-fg">Breakdown log ({fmtNum(rows.length)})</div>
-          <button onClick={() => csvDownload(`breakdowns_${today()}.csv`, cols, rows.map((b) => ({ ...b, at: fmtTime(b.at) })))}
-            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-fg">Tickets ({fmtNum(rows.length)}) · {scopeLabel}</div>
+            <div className="text-xs text-muted">Export follows these filters — hand it to auto-tech for the monthly report.</div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex gap-1.5">
+              {(["All", "ViperDet", "Axxis", "Other"] as const).map((l) => (
+                <button key={l} onClick={() => setLine(l)}
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs ${line === l ? "border-accent bg-accent font-semibold text-white" : "border-border bg-surface hover:bg-bg"}`}>{l}</button>
+              ))}
+            </div>
+            <div className="flex gap-1.5">
+              {([["raised", "Raised in range"], ["open", "Open now"], ["all", "All"]] as const).map(([s, lbl]) => (
+                <button key={s} onClick={() => setScope(s)}
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs ${scope === s ? "border-accent bg-accent font-semibold text-white" : "border-border bg-surface hover:bg-bg"}`}>{lbl}</button>
+              ))}
+            </div>
+            <button onClick={exportRows} disabled={!rows.length}
+              className="flex items-center gap-1.5 rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50">
+              <Download size={14} /> Export CSV
+            </button>
+          </div>
         </div>
-        <Grid cols={cols} rows={rows as unknown as Record<string, unknown>[]} tone={(r) => (r.nature === "Critical Breakdown" ? "bad" : undefined)} maxH="34rem" />
+        {tickets.length === 0
+          ? <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted">No ticket data — check the <span className="font-mono">Tickets</span> tab exists in the sheet.</div>
+          : <Grid cols={cols} rows={rows as unknown as Record<string, unknown>[]}
+              tone={(r) => (r.severity === "Critical" ? "bad" : r.severity === "High" ? "warn" : undefined)} maxH="34rem" />}
       </CardBody></Card>
     </>
   );
