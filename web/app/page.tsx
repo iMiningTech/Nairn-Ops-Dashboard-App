@@ -1020,8 +1020,11 @@ function MatrixHeader({ data, onExport }: { data: MatrixResult; onExport: () => 
 }
 
 // ── Raw Materials: non-finished-goods pivot (description × room) ─────────────
+// Raw Materials shows the standard site rooms plus the Production Floor (holds
+// component/detonator pools) — that extra room is scoped to this tab only.
+const RAW_MATERIAL_ROOMS = [...SITE_ROOMS, "Production Floor"];
 function RawMaterialsView({ items }: { items: InventoryItem[] }) {
-  const data = useMemo(() => inventoryMatrix(items, false, SITE_ROOMS), [items]);
+  const data = useMemo(() => inventoryMatrix(items, false, RAW_MATERIAL_ROOMS), [items]);
   return (
     <Card><CardBody>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
