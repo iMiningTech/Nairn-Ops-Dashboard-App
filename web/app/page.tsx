@@ -25,7 +25,7 @@ import {
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
-import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType } from "@/lib/destruction";
+import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType, weighWaste } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
 import { TYPE_COLOURS } from "@/lib/colors";
@@ -1073,12 +1073,50 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
   const waste = useMemo(() => wasteInRange(contents, range.from, range.to), [contents, range]);
   const consolidated = useMemo(() => consolidateDestroyed(lineItems), [lineItems]);
   const consolidatedByType = useMemo(() => consolidateDestroyedByType(lineItems), [lineItems]);
+  const weigh = useMemo(() => weighWaste(txns, range.from, range.to), [txns, range]);
+  const weighNetKg = weigh.reduce((s, w) => s + w.netKg, 0);
+  const directConsolidated = useMemo(() => {
+    const m = new Map<string, { item: string; reason: string; quantity: number; count: number }>();
+    for (const d of direct) { const k = `${d.description}|${d.type}`; const e = m.get(k) || { item: d.description, reason: d.type, quantity: 0, count: 0 }; e.quantity += d.qty; e.count++; m.set(k, e); }
+    return Array.from(m.values());
+  }, [direct]);
   const [openBatch, setOpenBatch] = useState<string | null>(null);
   const openBatchLines = useMemo(() => lineItems.filter((c) => c.batch_qr === openBatch), [lineItems, openBatch]);
 
+  const weighCols: Col[] = [
+    { key: "at", label: "When", fmt: fmtTs }, { key: "item", label: "Item" },
+    { key: "totalKg", label: "Total kg", num: true, fmt: (v) => Number(v).toFixed(1) },
+    { key: "tareKg", label: "Tare kg", num: true, fmt: (v) => Number(v).toFixed(1) },
+    { key: "netKg", label: "Net kg", num: true, fmt: (v) => Number(v).toFixed(1) },
+    { key: "qty", label: "Qty", num: true, fmt: fmtQty }, { key: "unit", label: "Unit" }, { key: "user", label: "By" },
+  ];
+
+  // Consolidated month-end export: T1 destruction (split by reason) + direct
+  // destructions + off-site weighed waste, one unified CSV for Melisa.
+  function exportAll() {
+    const cols: Col[] = [
+      { key: "category", label: "Category" }, { key: "item", label: "Item" }, { key: "reason", label: "Reason" },
+      { key: "unit", label: "Unit" }, { key: "quantity", label: "Quantity" }, { key: "weight_kg", label: "Weight (kg net)" },
+      { key: "batches", label: "Batches" }, { key: "disposal", label: "Disposal" }, { key: "detail", label: "Detail" },
+    ];
+    const rows = [
+      ...consolidatedByType.map((r) => ({ category: "NDT batch", item: r.item, reason: r.entryType, unit: r.unit, quantity: r.qty, weight_kg: "", batches: r.batches, disposal: "T1 destruction", detail: "" })),
+      ...directConsolidated.map((r) => ({ category: "Direct destruction", item: r.item, reason: r.reason, unit: "", quantity: r.quantity, weight_kg: "", batches: r.count, disposal: "T1 destruction", detail: "" })),
+      ...weigh.map((w) => ({ category: "Weighed waste", item: w.item, reason: "Waste weigh", unit: w.unit, quantity: w.qty, weight_kg: w.netKg, batches: "", disposal: "Burning grounds (off-site)", detail: w.detail })),
+    ];
+    csvDownload(`destruction_and_waste_${range.from}_to_${range.to}.csv`, cols, rows as unknown as Record<string, unknown>[]);
+  }
+
   return (
     <>
-      <div className="text-sm text-muted">Destroyed / waste shown for {rangeLabel} · awaiting list is live</div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-muted">Destroyed / waste shown for {rangeLabel} · awaiting list is live</div>
+        <button onClick={exportAll}
+          title="One CSV: T1 destruction (by reason) + direct destructions + off-site weighed waste"
+          className="flex items-center gap-1.5 rounded-lg border border-accent bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90">
+          <Download size={15} /> Export all destruction &amp; waste (CSV)
+        </button>
+      </div>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat label="Awaiting destruction" value={awaiting.length} status={awaiting.length ? "warn" : "ok"} sub="NDT batches not yet destroyed" />
         <Stat label="Batches destroyed" value={batches.length} sub={rangeLabel} />
@@ -1156,6 +1194,17 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
             { key: "qty", label: "Total Qty", num: true, fmt: fmtQty },
           ]}
           rows={consolidated as unknown as Record<string, unknown>[]} />
+      </CardBody></Card>
+
+      {/* Shock-tube / EZ-block waste weighed into bags — burned OFF-SITE, not T1 */}
+      <Card><CardBody>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold text-fg">Weighed waste — shock tube / EZ block · {rangeLabel}</div>
+          <button onClick={() => csvDownload(`weighed_waste_${today()}.csv`, weighCols, weigh.map((w) => ({ ...w, at: fmtTime(w.at) })))}
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+        </div>
+        <div className="mb-3 text-xs text-muted">Bagged shock-tube / EZ-block waste, weighed and logged. <span className="font-medium text-fg">Not destroyed at T1</span> — burned off-site at the burning grounds. {weigh.length} weigh(s) · <span className="font-medium text-fg">{weighNetKg.toFixed(1)} kg</span> net.</div>
+        <Grid maxH="24rem" cols={weighCols} rows={weigh as unknown as Record<string, unknown>[]} />
       </CardBody></Card>
     </>
   );

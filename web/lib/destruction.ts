@@ -124,6 +124,30 @@ export function consolidateDestroyedByType(lineItems: BatchContent[]): Destroyed
     .sort((a, b) => a.item.localeCompare(b.item) || a.entryType.localeCompare(b.entryType));
 }
 
+// Shock-tube / EZ-block waste weighed into bags (Type=WASTE_WEIGH in the log).
+// NOT destroyed at T1 — burned off-site at the burning grounds. Log-only; the
+// Notes string carries the weights, e.g.:
+//   "Shock Tube - Orange (meters) | total=16.7kg, tare=0.0kg, divisor=5.556g/unit → 3005.8 m"
+// Old_Value holds the computed quantity.
+export type WeighWaste = { at: string | null; qr: string; item: string; totalKg: number; tareKg: number; netKg: number; qty: number; unit: string; user: string; detail: string };
+export function weighWaste(txns: Transaction[], from: string, to: string): WeighWaste[] {
+  const num = (s: string | undefined) => { const n = parseFloat(String(s ?? "")); return isNaN(n) ? 0 : n; };
+  return txns
+    .filter((t) => t.type === "WASTE_WEIGH")
+    .filter((t) => { const k = dateKey(t.timestamp || ""); return !!k && k >= from && k <= to; })
+    .map((t) => {
+      const notes = t.notes || "";
+      const item = (notes.split("|")[0] || "").trim() || t.qr;
+      const total = num((notes.match(/total=([\d.]+)\s*kg/i) || [])[1]);
+      const tare = num((notes.match(/tare=([\d.]+)\s*kg/i) || [])[1]);
+      const arrow = notes.match(/→\s*([\d.]+)\s*(\S+)/);
+      const qty = arrow ? num(arrow[1]) : num(t.old_value);
+      const unit = arrow ? arrow[2] : "";
+      return { at: t.timestamp, qr: t.qr, item, totalKg: total, tareKg: tare, netKg: Math.max(0, +(total - tare).toFixed(3)), qty, unit, user: t.user, detail: notes };
+    })
+    .sort((a, b) => (Date.parse(b.at || "") || 0) - (Date.parse(a.at || "") || 0));
+}
+
 export type WasteEntry = { at: string | null; batch_qr: string; line: string; item: string; qty: number; unit: string; logged_by: string };
 export function wasteInRange(contents: BatchContent[], from: string, to: string): WasteEntry[] {
   return contents
