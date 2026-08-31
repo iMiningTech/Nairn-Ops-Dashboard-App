@@ -105,6 +105,25 @@ export function consolidateDestroyed(lineItems: BatchContent[]): DestroyedItem[]
     .sort((a, b) => b.qty - a.qty);
 }
 
+// Same consolidation but SPLIT by entry type (Waste / QC / Production / …) —
+// one row per item + unit + entry type. For the CSV export so quantities are
+// attributed per reason instead of lumped onto one line.
+export type DestroyedItemByType = { item: string; entryType: string; unit: string; qty: number; batches: number };
+export function consolidateDestroyedByType(lineItems: BatchContent[]): DestroyedItemByType[] {
+  const m = new Map<string, { item: string; entryType: string; unit: string; qty: number; batches: Set<string> }>();
+  for (const c of lineItems) {
+    const type = c.entry_type || "(unspecified)";
+    const key = `${c.item}|${c.unit}|${type}`;
+    const e = m.get(key) || { item: c.item, entryType: type, unit: c.unit, qty: 0, batches: new Set<string>() };
+    e.qty += c.quantity;
+    if (c.batch_qr) e.batches.add(c.batch_qr);
+    m.set(key, e);
+  }
+  return Array.from(m.values())
+    .map((e) => ({ item: e.item, entryType: e.entryType, unit: e.unit, qty: e.qty, batches: e.batches.size }))
+    .sort((a, b) => a.item.localeCompare(b.item) || a.entryType.localeCompare(b.entryType));
+}
+
 export type WasteEntry = { at: string | null; batch_qr: string; line: string; item: string; qty: number; unit: string; logged_by: string };
 export function wasteInRange(contents: BatchContent[], from: string, to: string): WasteEntry[] {
   return contents

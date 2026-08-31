@@ -25,7 +25,7 @@ import {
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
-import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed } from "@/lib/destruction";
+import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
 import { TYPE_COLOURS } from "@/lib/colors";
@@ -1072,6 +1072,7 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
   const { batches, direct, lineItems } = useMemo(() => destroyedInRange(items, txns, contents, range.from, range.to), [items, txns, contents, range]);
   const waste = useMemo(() => wasteInRange(contents, range.from, range.to), [contents, range]);
   const consolidated = useMemo(() => consolidateDestroyed(lineItems), [lineItems]);
+  const consolidatedByType = useMemo(() => consolidateDestroyedByType(lineItems), [lineItems]);
   const [openBatch, setOpenBatch] = useState<string | null>(null);
   const openBatchLines = useMemo(() => lineItems.filter((c) => c.batch_qr === openBatch), [lineItems, openBatch]);
 
@@ -1142,9 +1143,10 @@ function DestructionView({ items, txns, contents, range, rangeLabel }:
         <div className="mb-1 flex items-center justify-between">
           <div className="text-sm font-semibold text-fg">Consolidated destruction summary · {rangeLabel}</div>
           <button onClick={() => csvDownload(`destruction_summary_${today()}.csv`,
-            [{ key: "item", label: "Item" }, { key: "entryTypes", label: "Entry types" }, { key: "batches", label: "Batches" }, { key: "unit", label: "Unit" }, { key: "qty", label: "Total Qty" }],
-            consolidated as unknown as Record<string, unknown>[])}
-            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+            [{ key: "item", label: "Item" }, { key: "entryType", label: "Reason" }, { key: "batches", label: "Batches" }, { key: "unit", label: "Unit" }, { key: "qty", label: "Total Qty" }],
+            consolidatedByType as unknown as Record<string, unknown>[])}
+            title="Exports one row per item per reason (Waste / QC / Production / …)"
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV (split by reason)</button>
         </div>
         <div className="mb-3 text-xs text-muted">Every distinct item destroyed across all batches in the period, quantities summed ({consolidated.length} item{consolidated.length === 1 ? "" : "s"}). Includes waste entries logged inside batches.</div>
         <Grid maxH="28rem"
