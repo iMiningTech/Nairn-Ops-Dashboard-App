@@ -294,7 +294,7 @@ export default function Dashboard() {
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}
-              {view === "capabilities" && <CapabilitiesView lengths={lengths} reference={reference} capabilities={capabilities} />}
+              {view === "capabilities" && <CapabilitiesView items={items} lengths={lengths} reference={reference} capabilities={capabilities} />}
             </div>
           )}
         </main>
@@ -1963,7 +1963,7 @@ function BoxGlyph({ color }: { color: string }) {
   );
 }
 
-function CapabilitiesView({ lengths, reference, capabilities }: { lengths: ManufacturableLength[]; reference: RefRow[]; capabilities: Capability[] }) {
+function CapabilitiesView({ items, lengths, reference, capabilities }: { items: InventoryItem[]; lengths: ManufacturableLength[]; reference: RefRow[]; capabilities: Capability[] }) {
   const [capLine, setCapLine] = useState<"All" | "ViperDet" | "Axxis">("All");
   const [capPt, setCapPt] = useState("all");
   const [capQ, setCapQ] = useState("");
@@ -1976,6 +1976,36 @@ function CapabilitiesView({ lengths, reference, capabilities }: { lengths: Manuf
       .sort((a, b) => a.line.localeCompare(b.line) || a.product_type.localeCompare(b.product_type) || (parseFloat(a.length) || 0) - (parseFloat(b.length) || 0) || a.delay.localeCompare(b.delay));
   }, [capabilities, capLine, capPt, capQ]);
   const capFamColour = (pt: string) => FAMILY_COLOURS[pt.toUpperCase()] || "#64748b";
+
+  // Available delays = every delay we HOLD IN STOCK as raw material (detonator
+  // caps in the mags/pools), parsed from item descriptions like "Detonator - 4000ms".
+  // Reflects capability, not just what's been produced. Connector colour (for the
+  // MS/bench series) comes from the reference connector section.
+  const connColour = useMemo(() => {
+    const m = new Map<number, { name: string; colour: string }>();
+    for (const r of reference) {
+      if (!/viper/i.test(r.section) || !/connector|delay/i.test(r.section)) continue;
+      const ms = parseFloat(String(r.value).replace(/[^0-9.]/g, "")) || 0;
+      if (ms) m.set(ms, { name: r.item, colour: r.colour });
+    }
+    return m;
+  }, [reference]);
+  const delayStock = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const i of items) {
+      if (i.type === "FINISHED_GOOD") continue;
+      const mt = String(i.description || "").match(/(\d{2,5})\s*ms/i);
+      if (!mt) continue;
+      const ms = parseInt(mt[1], 10);
+      m.set(ms, (m.get(ms) || 0) + (i.current_quantity || 0));
+    }
+    return Array.from(m, ([ms, qty]) => ({ ms, qty, conn: connColour.get(ms) })).sort((a, b) => a.ms - b.ms);
+  }, [items, connColour]);
+  const microDelays = delayStock.filter((d) => d.ms < 500);
+  const msLpDelays = delayStock.filter((d) => d.ms >= 500);   // 500ms + the LP long-period range
+  const vdCombos = useMemo(() => Array.from(new Set(capabilities.filter((c) => c.line === "ViperDet" && c.delay.trim()).map((c) => c.delay.trim())))
+    .sort((a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0)), [capabilities]);
+
   // Lengths each line can make, from Manufacturable_Lengths (Active only).
   const toFeet = (m: number) => (m * 3.28084).toFixed(1);
   const byLine = useMemo(() => {
@@ -1989,11 +2019,16 @@ function CapabilitiesView({ lengths, reference, capabilities }: { lengths: Manuf
     return Array.from(m, ([line, rows]) => ({ line, rows: rows.sort((a, b) => a.m - b.m) }));
   }, [lengths]);
 
-  // Reference rows grouped by Section, preserving sheet order.
+  // Reference rows grouped by Section, preserving sheet order. The ViperDet
+  // connector-colour section is dropped — it's shown in the delays table above.
   const sections = useMemo(() => {
     const order: string[] = [];
     const m = new Map<string, RefRow[]>();
-    for (const r of reference) { if (!m.has(r.section)) { m.set(r.section, []); order.push(r.section); } m.get(r.section)!.push(r); }
+    for (const r of reference) {
+      if (/viper/i.test(r.section) && /connector/i.test(r.section)) continue;
+      if (!m.has(r.section)) { m.set(r.section, []); order.push(r.section); }
+      m.get(r.section)!.push(r);
+    }
     return order.map((s) => ({ section: s, rows: m.get(s)! }));
   }, [reference]);
 
@@ -2006,7 +2041,112 @@ function CapabilitiesView({ lengths, reference, capabilities }: { lengths: Manuf
         </button>
       </div>
 
-      {/* Production catalogue — box specs from Manufacturing_Capabilities */}
+      {/* Lengths per line (live from Manufacturable_Lengths) */}
+      <Card className="print-card"><CardBody>
+        <div className="mb-3 text-sm font-semibold text-fg">Lengths each line can produce</div>
+        {byLine.length ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {byLine.map(({ line, rows }) => (
+              <div key={line} className="overflow-hidden rounded-xl border border-border">
+                <div className="border-b border-border bg-bg px-3 py-2 font-semibold text-fg">{line}</div>
+                <table className="w-full text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-muted">
+                    <tr><th className="px-3 py-1.5 text-left font-medium">Metres</th><th className="px-3 py-1.5 text-left font-medium">Feet</th></tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={i} className="border-t border-border">
+                        <td className="px-3 py-1.5 tabular-nums text-fg">{r.m} m</td>
+                        <td className="px-3 py-1.5 tabular-nums text-muted">{toFeet(r.m)} ft</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        ) : <div className="text-sm text-muted">No active lengths in Manufacturable_Lengths.</div>}
+      </CardBody></Card>
+
+      {/* ViperDet delays — from raw-material stock (capability, not just produced) */}
+      {delayStock.length > 0 && (
+        <Card className="print-card"><CardBody>
+          <div className="mb-1 text-sm font-semibold text-fg">ViperDet delays available</div>
+          <div className="mb-3 text-xs text-muted">Every delay we hold in stock as detonator caps (mags &amp; pools), incl. the LP long-period range — not just what&apos;s been produced.</div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {[{ title: "Microcap delays", rows: microDelays }, { title: "MS and LP delays", rows: msLpDelays }].map(({ title, rows }) => rows.length > 0 && (
+              <div key={title}>
+                <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted">{title}</div>
+                <div className="overflow-hidden rounded-xl border border-border">
+                  <table className="w-full text-sm">
+                    <thead className="text-xs uppercase tracking-wide text-muted"><tr>
+                      <th className="px-3 py-1.5 text-left font-medium">Delay</th>
+                      <th className="px-3 py-1.5 text-left font-medium">EZ-Block Connector Colour</th>
+                      <th className="px-3 py-1.5 text-right font-medium">In stock</th>
+                    </tr></thead>
+                    <tbody>
+                      {rows.map((d) => (
+                        <tr key={d.ms} className="border-t border-border">
+                          <td className="px-3 py-1.5 font-semibold tabular-nums text-fg">{d.ms} ms</td>
+                          <td className="px-3 py-1.5">
+                            {d.conn ? <span className="flex items-center gap-2 text-fg"><span className="inline-block h-3.5 w-3.5 rounded-sm border border-border" style={{ background: d.conn.colour }} />{d.conn.name}</span> : <span className="text-muted">—</span>}
+                          </td>
+                          <td className={`px-3 py-1.5 text-right tabular-nums ${d.qty > 0 ? "text-fg" : "text-muted"}`}>{fmtNum(d.qty)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+          {vdCombos.length > 0 && (
+            <div className="mt-3">
+              <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted">MS DUAL combinations produced (in-hole / surface)</div>
+              <div className="flex flex-wrap gap-1.5">
+                {vdCombos.map((d) => <span key={d} className="rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs font-medium text-fg">{d}</span>)}
+              </div>
+            </div>
+          )}
+        </CardBody></Card>
+      )}
+
+      {/* Editable reference sections */}
+      {sections.map(({ section, rows }) => (
+        <Card key={section} className="print-card"><CardBody>
+          <div className="mb-3 text-sm font-semibold text-fg">{section}</div>
+          <div className="overflow-hidden rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className="border-t border-border first:border-t-0">
+                    <td className="px-3 py-2 align-top font-medium text-fg">
+                      <span className="flex items-center gap-2">
+                        {r.colour ? <span className="inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-border" style={{ background: r.colour }} /> : null}
+                        {r.item}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 align-top text-fg">{r.value}</td>
+                    <td className="px-3 py-2 align-top text-muted">{r.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardBody></Card>
+      ))}
+
+      {!sections.length && (
+        <Card><CardBody>
+          <div className="text-sm text-muted">
+            No reference content yet. Create a <span className="font-mono text-fg">Manufacturing_Reference</span> tab with columns:
+            <span className="font-mono text-fg"> Section · Item · Value · Detail · Colour</span> and it renders here grouped by Section.
+            <div className="mt-2">Examples: Section=<span className="font-mono">Shock Tube Colours</span>, Item=<span className="font-mono">Orange</span>, Value=<span className="font-mono">In-hole / downhole</span>, Colour=<span className="font-mono">#f5911e</span>; or Section=<span className="font-mono">Packing Quantities</span>, Item=<span className="font-mono">1.1D Detonators</span>, Value=<span className="font-mono">100 / box</span>, Detail=<span className="font-mono">UN0030</span>.</div>
+          </div>
+        </CardBody></Card>
+      )}
+
+      {/* Production catalogue — box specs from Manufacturing_Capabilities (bottom) */}
       <Card className="print-card"><CardBody>
         <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -2064,68 +2204,6 @@ function CapabilitiesView({ lengths, reference, capabilities }: { lengths: Manuf
           </div>
         )}
       </CardBody></Card>
-
-      {/* Lengths per line (live from Manufacturable_Lengths) */}
-      <Card className="print-card"><CardBody>
-        <div className="mb-3 text-sm font-semibold text-fg">Lengths each line can produce</div>
-        {byLine.length ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {byLine.map(({ line, rows }) => (
-              <div key={line} className="overflow-hidden rounded-xl border border-border">
-                <div className="border-b border-border bg-bg px-3 py-2 font-semibold text-fg">{line}</div>
-                <table className="w-full text-sm">
-                  <thead className="text-xs uppercase tracking-wide text-muted">
-                    <tr><th className="px-3 py-1.5 text-left font-medium">Metres</th><th className="px-3 py-1.5 text-left font-medium">Feet</th></tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r, i) => (
-                      <tr key={i} className="border-t border-border">
-                        <td className="px-3 py-1.5 tabular-nums text-fg">{r.m} m</td>
-                        <td className="px-3 py-1.5 tabular-nums text-muted">{toFeet(r.m)} ft</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        ) : <div className="text-sm text-muted">No active lengths in Manufacturable_Lengths.</div>}
-      </CardBody></Card>
-
-      {/* Editable reference sections */}
-      {sections.map(({ section, rows }) => (
-        <Card key={section} className="print-card"><CardBody>
-          <div className="mb-3 text-sm font-semibold text-fg">{section}</div>
-          <div className="overflow-hidden rounded-xl border border-border">
-            <table className="w-full text-sm">
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-t border-border first:border-t-0">
-                    <td className="px-3 py-2 align-top font-medium text-fg">
-                      <span className="flex items-center gap-2">
-                        {r.colour ? <span className="inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-border" style={{ background: r.colour }} /> : null}
-                        {r.item}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 align-top text-fg">{r.value}</td>
-                    <td className="px-3 py-2 align-top text-muted">{r.detail}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardBody></Card>
-      ))}
-
-      {!sections.length && (
-        <Card><CardBody>
-          <div className="text-sm text-muted">
-            No reference content yet. Create a <span className="font-mono text-fg">Manufacturing_Reference</span> tab with columns:
-            <span className="font-mono text-fg"> Section · Item · Value · Detail · Colour</span> and it renders here grouped by Section.
-            <div className="mt-2">Examples: Section=<span className="font-mono">Shock Tube Colours</span>, Item=<span className="font-mono">Orange</span>, Value=<span className="font-mono">In-hole / downhole</span>, Colour=<span className="font-mono">#f5911e</span>; or Section=<span className="font-mono">Packing Quantities</span>, Item=<span className="font-mono">1.1D Detonators</span>, Value=<span className="font-mono">100 / box</span>, Detail=<span className="font-mono">UN0030</span>.</div>
-          </div>
-        </CardBody></Card>
-      )}
     </>
   );
 }
