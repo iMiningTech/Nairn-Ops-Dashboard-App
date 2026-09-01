@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -25,6 +25,7 @@ import {
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
 import { ticketRows, ticketMetrics, fmtHours, OPEN_STATUSES, type TicketRow } from "@/lib/tickets";
+import { reportForDay, eosInRange, eosSummary, shiftFlags, isCleanShift, eosDay } from "@/lib/eos";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType, weighWaste } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
@@ -114,6 +115,7 @@ export default function Dashboard() {
   const [reference, setReference] = useState<RefRow[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([]);
+  const [eos, setEos] = useState<ShiftReport[]>([]);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -139,7 +141,7 @@ export default function Dashboard() {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr, tk, te] = await Promise.all([
+      const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr, tk, te, er] = await Promise.all([
         api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
@@ -151,6 +153,7 @@ export default function Dashboard() {
         api.manufacturingReference().catch(() => ({ items: [] as RefRow[] })),
         api.tickets().catch(() => ({ items: [] as Ticket[] })),
         api.ticketEvents().catch(() => ({ items: [] as TicketEvent[] })),
+        api.eosReports().catch(() => ({ items: [] as ShiftReport[] })),
       ]);
       setItems(stock.items || []);
       setTxns(tx.items || []);
@@ -164,6 +167,7 @@ export default function Dashboard() {
       setReference(mr.items || []);
       setTickets(tk.items || []);
       setTicketEvents(te.items || []);
+      setEos(er.items || []);
       setGeneratedAt(stock.generated_at);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -276,9 +280,9 @@ export default function Dashboard() {
             <div className="text-sm text-muted">Loading…</div>
           ) : (
             <div className="space-y-6">
-              {view === "overview" && <OverviewView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} decon={decon} tv={tv} />}
-              {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} month={hi.slice(0, 7)} />}
-              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} breakdowns={breakdowns} qc={qc} contents={batchContents} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
+              {view === "overview" && <OverviewView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} decon={decon} eos={eos} tv={tv} />}
+              {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} eos={eos} month={hi.slice(0, 7)} />}
+              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} breakdowns={breakdowns} qc={qc} contents={batchContents} tickets={tickets} events={ticketEvents} eos={eos} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
               {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
@@ -426,8 +430,60 @@ function ShiftDeadtimeCard({ shift, tv }: { shift: ShiftInfo; tv: boolean }) {
 }
 
 // ── OVERVIEW ─────────────────────────────────────────────────────────────────
-function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
-  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; decon: Decon[]; tv: boolean }) {
+// A single end-of-shift report rendered as a card (or a "not submitted" prompt).
+function EosReportCard({ report, title }: { report: ShiftReport | null; title: string }) {
+  if (!report) return (
+    <Card className="border-t-4 border-t-warn"><CardBody>
+      <div className="flex items-center gap-2 text-sm font-semibold text-warn"><AlertTriangle size={18} /> {title}</div>
+      <div className="mt-1 text-sm text-muted">No end-of-shift report submitted yet.</div>
+    </CardBody></Card>
+  );
+  const flags = shiftFlags(report);
+  const clean = flags.length === 0;
+  const Row = ({ label, value, bad }: { label: string; value: string; bad?: boolean }) => (
+    <div className="flex justify-between gap-3 border-t border-border py-1.5 text-sm">
+      <span className="text-muted">{label}</span>
+      <span className={`text-right font-medium ${bad ? "text-danger" : "text-fg"}`}>{value}</span>
+    </div>
+  );
+  const notes: [string, string][] = [
+    ["ViperDet note", report.start_viper_notes], ["Axxis note", report.start_axxis_notes],
+    ["Dead time", report.dead_time_reasons], ["Staff", report.staff_notes],
+    ["QC", report.qc_notes], ["Materials", report.materials_notes],
+    ["Handover", report.handover_notes], ["Other", report.other_notes],
+  ];
+  const shownNotes = notes.filter(([, v]) => v && v.trim());
+  return (
+    <Card className={`border-t-4 ${clean ? "border-t-ok" : "border-t-warn"}`}><CardBody>
+      <div className="mb-1 flex items-center justify-between">
+        <div className="text-sm font-semibold text-fg">{title}</div>
+        <Badge tone={clean ? "ok" : "warn"}>{clean ? "Clean shift" : `${flags.length} flag(s)`}</Badge>
+      </div>
+      <div className="grid gap-x-8 md:grid-cols-2">
+        <div>
+          <Row label="ViperDet start" value={report.start_viper || "—"} bad={!!report.start_viper && report.start_viper !== "On Time"} />
+          <Row label="Axxis start" value={report.start_axxis || "—"} bad={!!report.start_axxis && report.start_axxis !== "On Time" && report.start_axxis !== "No Production"} />
+          <Row label="Dead time" value={report.dead_time ? "Yes" : "No"} bad={report.dead_time} />
+          <Row label="Staff" value={report.staff_all_present ? "All present" : `${report.staff_missing_count || "?"} missing · ${report.staff_missing_reason || "—"}`} bad={!report.staff_all_present} />
+        </div>
+        <div>
+          <Row label="QC issues" value={report.qc_issues ? "Yes" : "No"} bad={report.qc_issues} />
+          <Row label="Materials shortage" value={report.materials_shortage ? "Yes" : "No"} bad={report.materials_shortage} />
+          <Row label="Submitted by" value={report.submitted_by || "—"} />
+          <Row label="Submitted" value={fmtTime(report.submitted_at)} />
+        </div>
+      </div>
+      {shownNotes.length > 0 && (
+        <div className="mt-3 space-y-1 border-t border-border pt-2 text-xs text-muted">
+          {shownNotes.map(([k, v]) => <div key={k}><b className="text-fg">{k}:</b> {v}</div>)}
+        </div>
+      )}
+    </CardBody></Card>
+  );
+}
+
+function OverviewView({ items, txns, targets, breakdowns, qc, decon, eos, tv }:
+  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; decon: Decon[]; eos: ShiftReport[]; tv: boolean }) {
   const today = todayKey();
   const tomorrow = dayKeyOffset(1);
   const month = today.slice(0, 7);
@@ -443,6 +499,7 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
   const printed = useMemo(() => printedOn(items, today), [items, today]);
   const moved = useMemo(() => movedToMagazinesOn(items, txns, today), [items, txns, today]);
   const low = useMemo(() => lowStock(items), [items]);
+  const todayEos = useMemo(() => reportForDay(eos, today, "Day"), [eos, today]);
 
   const printedTotal = printed.reduce((s, p) => s + p.quantity, 0);
   const reconcileDiff = printedTotal - moved.total;
@@ -470,6 +527,9 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, tv }:
           <TargetTable rows={tomoTargets} />
         </CardBody></Card>
       </div>
+
+      {/* End-of-shift report — today */}
+      <EosReportCard report={todayEos} title={`End-of-shift report — today · ${shortDay(today)}`} />
 
       {/* Today's production + target gauge */}
       <div className={`grid gap-4 ${tv ? "grid-cols-3" : "grid-cols-1 md:grid-cols-3"}`}>
@@ -586,13 +646,20 @@ function TargetTable({ rows }: { rows: DailyTarget[] }) {
 
 // ── MONTHLY REPORT ───────────────────────────────────────────────────────────
 // Month is driven by the sidebar date picker (any day in the month).
-function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
-  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; month: string }) {
+function MonthlyView({ items, txns, targets, breakdowns, qc, eos, month: m }:
+  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; eos: ShiftReport[]; month: string }) {
   const sd = useMemo(() => startDeadtimeByDay(items, txns, SHIFT_START_HOUR, m), [items, txns, m]);
   const tot = useMemo(() => monthTotals(items, m), [items, m]);
   const prod = useMemo(() => productionByDay(items, m), [items, m]);
   const qcS = useMemo(() => qcSummary(qc, "", m), [qc, m]);
   const bdS = useMemo(() => breakdownSummary(breakdowns, m), [breakdowns, m]);
+  const eosMonth = useMemo(() => eosInRange(eos, `${m}-01`, `${m}-31`), [eos, m]);
+  const eosSum = useMemo(() => eosSummary(eosMonth), [eosMonth]);
+  // Gaps = production days with no end-of-shift report (the "missing report" signal).
+  const eosGaps = useMemo(() => {
+    const have = new Set(eosMonth.map(eosDay));
+    return prod.rows.map((r) => r.day).filter((d) => !have.has(d));
+  }, [eosMonth, prod.rows]);
 
   const targetByDay = new Map<string, number>();
   for (const t of targets) if (t.date.startsWith(m)) targetByDay.set(t.date, (targetByDay.get(t.date) || 0) + t.quantity);
@@ -685,6 +752,43 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
           ]}
           rows={variants as unknown as Record<string, unknown>[]} />
       </CardBody></Card>
+
+      {/* End-of-shift reporting */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-6">
+        <Stat label="Shift reports" value={fmtNum(eosSum.count)} sub={`${eosGaps.length} production day(s) missing`} status={eosGaps.length ? "warn" : "ok"} />
+        <Stat label="Clean shifts" value={eosSum.count ? `${eosSum.clean}/${eosSum.count}` : "—"} status={eosSum.flagged ? "warn" : "ok"} />
+        <Stat label="ViperDet on-time" value={eosSum.count ? `${eosSum.viperOnTime}/${eosSum.count}` : "—"} />
+        <Stat label="Dead-time days" value={fmtNum(eosSum.deadTimeDays)} status={eosSum.deadTimeDays ? "warn" : "ok"} />
+        <Stat label="QC-issue days" value={fmtNum(eosSum.qcDays)} status={eosSum.qcDays ? "warn" : "ok"} />
+        <Stat label="Materials-short days" value={fmtNum(eosSum.materialsDays)} status={eosSum.materialsDays ? "warn" : "ok"} />
+      </div>
+
+      <Card><CardBody>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold text-fg">End-of-shift reports — {monthLabel}</div>
+          <button onClick={() => csvDownload(`eos_reports_${m}.csv`,
+            [{ key: "date", label: "Date" }, { key: "shift", label: "Shift" }, { key: "start_viper", label: "ViperDet start" }, { key: "start_axxis", label: "Axxis start" },
+              { key: "dead_time", label: "Dead time" }, { key: "dead_time_reasons", label: "Dead time reasons" }, { key: "staff_all_present", label: "Staff all present" },
+              { key: "staff_missing_count", label: "Missing count" }, { key: "staff_missing_reason", label: "Missing reason" },
+              { key: "qc_issues", label: "QC issues" }, { key: "qc_notes", label: "QC notes" }, { key: "materials_shortage", label: "Materials shortage" }, { key: "materials_notes", label: "Materials notes" },
+              { key: "handover_notes", label: "Handover" }, { key: "other_notes", label: "Other" }, { key: "submitted_by", label: "Submitted by" }, { key: "submitted_at", label: "Submitted at" }],
+            eosMonth.map((r) => ({ ...r, dead_time: r.dead_time ? "Yes" : "No", staff_all_present: r.staff_all_present ? "Yes" : "No", qc_issues: r.qc_issues ? "Yes" : "No", materials_shortage: r.materials_shortage ? "Yes" : "No", submitted_at: fmtTime(r.submitted_at) })))}
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+        </div>
+        <div className="mb-3 text-xs text-muted">One row per shift. {eosGaps.length > 0 ? <span className="text-warn">Missing on production day(s): {eosGaps.map((d) => shortDay(d)).join(", ")}.</span> : "A report exists for every production day."}</div>
+        <Grid maxH="26rem"
+          cols={[
+            { key: "date", label: "Date", fmt: (v) => shortDay(dateKey(String(v))) },
+            { key: "start_viper", label: "ViperDet" }, { key: "start_axxis", label: "Axxis" },
+            { key: "dead_time", label: "Dead time", fmt: (v) => (v ? "Yes" : "No") },
+            { key: "staff", label: "Staff" },
+            { key: "qc_issues", label: "QC", fmt: (v) => (v ? "Yes" : "No") },
+            { key: "materials_shortage", label: "Materials", fmt: (v) => (v ? "Yes" : "No") },
+            { key: "flags", label: "Flags" }, { key: "submitted_by", label: "By" },
+          ]}
+          rows={eosMonth.map((r) => ({ ...r, staff: r.staff_all_present ? "All present" : `${r.staff_missing_count || "?"} missing`, flags: shiftFlags(r).join(" · ") || "clean" })) as unknown as Record<string, unknown>[]}
+          tone={(r) => (isCleanShift(r as unknown as ShiftReport) ? undefined : "warn")} />
+      </CardBody></Card>
     </>
   );
 }
@@ -692,16 +796,16 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, month: m }:
 // ── MONTHLY EXPORT ───────────────────────────────────────────────────────────
 // One-click consolidated Markdown export of every tab for a chosen month, built
 // to paste straight into Claude Desktop as the input for the human monthly report.
-function MonthlyExportView({ items, txns, users, targets, breakdowns, qc, contents, defaultMonth, generatedAt }:
-  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; contents: BatchContent[]; defaultMonth: string; generatedAt: string | null }) {
+function MonthlyExportView({ items, txns, users, targets, breakdowns, qc, contents, tickets, events, eos, defaultMonth, generatedAt }:
+  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; contents: BatchContent[]; tickets: Ticket[]; events: TicketEvent[]; eos: ShiftReport[]; defaultMonth: string; generatedAt: string | null }) {
   const [month, setMonth] = useState(defaultMonth);
   const [copied, setCopied] = useState(false);
   const maxMonth = todayKey().slice(0, 7);
 
   const md = useMemo(() => buildMonthlyReport({
-    items, txns, users, targets, breakdowns, qc, contents,
+    items, txns, users, targets, breakdowns, qc, contents, tickets, events, eos,
     month, todayKey: todayKey(), generatedAt, shiftStartHour: SHIFT_START_HOUR,
-  }), [items, txns, users, targets, breakdowns, qc, contents, month, generatedAt]);
+  }), [items, txns, users, targets, breakdowns, qc, contents, tickets, events, eos, month, generatedAt]);
 
   const monthLabel = (() => { const [y, mm] = month.split("-").map(Number); return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }); })();
 

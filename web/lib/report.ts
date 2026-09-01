@@ -10,17 +10,20 @@
 // today for the in-progress month). Inventory sections are a live "as of now"
 // snapshot and are labelled as such.
 
-import type { InventoryItem, Transaction, User, DailyTarget, Breakdown, QcCheck, BatchContent } from "@/lib/api";
-import { fmtNum, fmtMins, fmtClock, shortDay, fmtDate, fmtTime } from "@/lib/utils";
+import type { InventoryItem, Transaction, User, DailyTarget, Breakdown, QcCheck, BatchContent, Ticket, TicketEvent, ShiftReport } from "@/lib/api";
+// (Breakdown kept in ReportInput for compatibility; breakdowns now come from tickets.)
+import { fmtNum, fmtMins, fmtClock, shortDay, fmtDate, fmtTime, dateKey } from "@/lib/utils";
 import {
   monthTotals, productionByDay, productionVariants, startDeadtimeByDay,
   inventoryMatrix, agedFinishedGoods, lowStock, SITE_ROOMS, PROD_FAMILIES, type MatrixResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers } from "@/lib/operators";
-import { breakdownSummary, qcSummary, logDayKey } from "@/lib/logs";
+import { qcSummary, logDayKey } from "@/lib/logs";
 import { destroyedInRange, wasteInRange, consolidateDestroyed, awaitingDestruction } from "@/lib/destruction";
 import { saleEvents, salesSummary } from "@/lib/sales";
 import { reconcilePools, reconcileRooms, inRange, type DateRange } from "@/lib/pools";
+import { ticketRows, ticketMetrics, fmtHours } from "@/lib/tickets";
+import { eosInRange, eosSummary, shiftFlags } from "@/lib/eos";
 
 export type ReportInput = {
   items: InventoryItem[];
@@ -30,6 +33,9 @@ export type ReportInput = {
   breakdowns: Breakdown[];
   qc: QcCheck[];
   contents: BatchContent[];
+  tickets: Ticket[];
+  events: TicketEvent[];
+  eos: ShiftReport[];
   month: string;               // "YYYY-MM"
   todayKey: string;            // site-local today, YYYY-MM-DD
   generatedAt?: string | null; // data freshness
@@ -68,7 +74,7 @@ function monthMeta(month: string, todayKey: string) {
 }
 
 export function buildMonthlyReport(inp: ReportInput): string {
-  const { items, txns, users, targets, breakdowns, qc, contents, month, todayKey } = inp;
+  const { items, txns, users, targets, qc, contents, tickets, events, eos, month, todayKey } = inp;
   const shiftStart = inp.shiftStartHour ?? 6;
   const { label, from, to, range } = monthMeta(month, todayKey);
   const out: string[] = [];
@@ -86,7 +92,10 @@ export function buildMonthlyReport(inp: ReportInput): string {
   const tot = monthTotals(items, month);
   const prod = productionByDay(items, month);
   const qcS = qcSummary(qc, todayKey, month);
-  const bdS = breakdownSummary(breakdowns, month);
+  const tm = ticketMetrics(tickets, events, from, to);
+  const ticketsMonth = ticketRows(tickets, events).filter((t) => { const k = dateKey(t.created_at || ""); return !!k && k >= from && k <= to; });
+  const eosMonth = eosInRange(eos, from, to);
+  const eosSum = eosSummary(eosMonth);
   const targetByDay = new Map<string, number>();
   for (const t of targets) if (t.date.startsWith(month)) targetByDay.set(t.date, (targetByDay.get(t.date) || 0) + t.quantity);
   const prodByDay = new Map(prod.rows.map((r) => [r.day, PROD_FAMILIES.reduce((s, f) => s + (Number((r as unknown as Record<string, number>)[f]) || 0), 0)]));
@@ -99,8 +108,9 @@ export function buildMonthlyReport(inp: ReportInput): string {
     ["Avg start deadtime", fmtMins(sd.avg), `time from shift start (${fmtClock(shiftStart * 60)}) to first sticker`],
     ["Targets met", targetDays.length ? `${metDays}/${targetDays.length}` : "—", "days at/above target"],
     ["QC pass rate", qcS.monthRate != null ? `${Math.round(qcS.monthRate * 100)}%` : "—", `${qcS.monthChecks} checks`],
-    ["Breakdowns", nf(bdS.monthCount), `${bdS.byLine.ViperDet} ViperDet · ${bdS.byLine.Axxis} Axxis`],
-    ["Downtime", fmtMins(bdS.monthDowntimeMin), "logged breakdown time"],
+    ["Breakdown tickets raised", nf(tm.raised), `${tm.closed} closed · ${tm.openTotal} open now`],
+    ["Avg time to resolve", fmtHours(tm.avgResolveHours), "closed tickets"],
+    ["Shift reports", nf(eosSum.count), `${eosSum.clean} clean · ${eosSum.flagged} flagged`],
   ], ["l", "r", "l"]));
   P();
 
@@ -150,23 +160,13 @@ export function buildMonthlyReport(inp: ReportInput): string {
     ["l", "r", "r", "r", "l", "r", "l", "l"]));
   P();
 
-  // ── 4. Breakdowns & QC ──────────────────────────────────────────────────────
-  P(`## 4. Breakdowns & QC`);
-  P(`### Breakdowns — ${label}`);
-  P(`${nf(bdS.monthCount)} breakdown(s) · ${fmtMins(bdS.monthDowntimeMin)} downtime · ${bdS.byLine.ViperDet} ViperDet / ${bdS.byLine.Axxis} Axxis.`);
-  if (bdS.byStation.length) {
-    P(`**By station:** ` + bdS.byStation.map((s) => `${s.name} (${s.value})`).join(", "));
-  }
-  if (bdS.byNature.length) {
-    P(`**By nature:** ` + bdS.byNature.map((s) => `${s.name} (${s.value})`).join(", "));
-  }
-  const bdLog = breakdowns
-    .filter((b) => logDayKey(b.at).startsWith(month))
-    .slice().sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
-  P(`### Breakdown log`);
-  P(mdTable(["When", "Line", "Station", "Nature", "Mins", "By", "Detail"],
-    bdLog.map((b) => [fmtTime(b.at), b.line, b.station || "—", b.nature, nf(b.duration_min), b.personnel || "—", b.info || "—"]),
-    ["l", "l", "l", "l", "r", "l", "l"]));
+  // ── 4. Breakdowns (maintenance tickets) & QC ────────────────────────────────
+  P(`## 4. Breakdowns (maintenance tickets) & QC`);
+  P(`### Breakdown tickets — ${label}`);
+  P(`${nf(tm.raised)} raised · ${nf(tm.closed)} closed${tm.cancelled ? ` · ${tm.cancelled} cancelled` : ""} · ${nf(tm.openTotal)} open now (${tm.openCriticalHigh} Critical/High). Avg time to resolve ${fmtHours(tm.avgResolveHours)} · avg first response ${fmtHours(tm.avgFirstResponseHours)}.`);
+  P(mdTable(["Ticket", "Line", "Title", "Severity", "Status", "Created", "Resolve", "1st resp"],
+    ticketsMonth.map((t) => [t.id, t.line_full, t.title, t.severity, t.status, fmtTime(t.created_at), fmtHours(t.resolve_hours), fmtHours(t.first_response_hours)]),
+    ["l", "l", "l", "l", "l", "l", "r", "r"]));
 
   P(`### QC crimp checks — ${label}`);
   const qcFailsMonth = qc.filter((q) => q.status === "Fail" && logDayKey(q.at).startsWith(month))
@@ -260,6 +260,34 @@ export function buildMonthlyReport(inp: ReportInput): string {
     P(mdTable(["Pool QR", "Description", "Room", "Actual", "Calc (log)", "Diff"],
       reconFlagged.map((p) => [p.qr, p.description, p.location || "—", nf(p.actual), p.calculated == null ? "—" : nf(p.calculated), (p.diff > 0 ? "+" : "") + nf(p.diff)]),
       ["l", "l", "l", "r", "r", "r"]));
+  }
+  P();
+
+  // ── 8. End-of-shift reporting ───────────────────────────────────────────────
+  P(`## 8. End-of-shift reporting`);
+  P(`${nf(eosSum.count)} shift report(s) · ${nf(eosSum.clean)} clean · ${nf(eosSum.flagged)} flagged. ViperDet started on time ${nf(eosSum.viperOnTime)}/${nf(eosSum.count)}. Dead-time days ${nf(eosSum.deadTimeDays)} · QC-issue days ${nf(eosSum.qcDays)} · materials-short days ${nf(eosSum.materialsDays)} · staff-short days ${nf(eosSum.staffMissingDays)}.`);
+  P(mdTable(["Date", "ViperDet", "Axxis", "Dead time", "Staff", "QC", "Materials", "Flags", "By"],
+    eosMonth.map((r) => [
+      shortDay(dateKey(r.date)), r.start_viper || "—", r.start_axxis || "—",
+      r.dead_time ? "Yes" : "No",
+      r.staff_all_present ? "All present" : `${r.staff_missing_count || "?"} missing`,
+      r.qc_issues ? "Yes" : "No", r.materials_shortage ? "Yes" : "No",
+      shiftFlags(r).join(" · ") || "clean", r.submitted_by || "—",
+    ]),
+    ["l", "l", "l", "l", "l", "l", "l", "l", "l"]));
+  // Free-text detail for flagged shifts (good for the write-up).
+  const withNotes = eosMonth.filter((r) => [r.start_viper_notes, r.start_axxis_notes, r.dead_time_reasons, r.staff_notes, r.qc_notes, r.materials_notes, r.handover_notes, r.other_notes].some((s) => s && s.trim()));
+  if (withNotes.length) {
+    P(`### Shift notes`);
+    for (const r of withNotes) {
+      const bits = [
+        r.start_viper_notes && `ViperDet: ${r.start_viper_notes}`, r.start_axxis_notes && `Axxis: ${r.start_axxis_notes}`,
+        r.dead_time_reasons && `Dead time: ${r.dead_time_reasons}`, r.staff_notes && `Staff: ${r.staff_notes}`,
+        r.qc_notes && `QC: ${r.qc_notes}`, r.materials_notes && `Materials: ${r.materials_notes}`,
+        r.handover_notes && `Handover: ${r.handover_notes}`, r.other_notes && `Other: ${r.other_notes}`,
+      ].filter(Boolean);
+      P(`- **${shortDay(dateKey(r.date))}** — ${bits.join(" · ")}`);
+    }
   }
   P();
   P(`---`);

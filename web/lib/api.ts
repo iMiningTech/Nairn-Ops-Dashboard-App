@@ -141,6 +141,19 @@ export type TicketEvent = {
   part_qr: string; part_description: string; qty_used: number; correlation_id: string;
 };
 
+// End-of-shift report (Shift_Reports tab). One row per Date+Shift, append-only.
+export type ShiftReport = {
+  report_id: string; date: string; shift: string;
+  start_viper: string; start_viper_notes: string;
+  start_axxis: string; start_axxis_notes: string;
+  dead_time: boolean; dead_time_reasons: string;
+  staff_all_present: boolean; staff_missing_count: number; staff_missing_reason: string; staff_notes: string;
+  qc_issues: boolean; qc_notes: string;
+  materials_shortage: boolean; materials_notes: string;
+  handover_notes: string; other_notes: string;
+  submitted_by: string; submitted_at: string | null;
+};
+
 // Reference / cheat-sheet data for the Capabilities tab.
 export type ManufacturableLength = { line: string; length_display: string; length_numeric: number; active: boolean };
 // Editable Manufacturing_Reference tab: rows grouped by Section.
@@ -307,6 +320,22 @@ function mapTicketEvent(r: Record<string, string>): TicketEvent {
     user: r["User"] ?? "", from_value: r["From_Value"] ?? "", to_value: r["To_Value"] ?? "",
     notes: r["Notes"] ?? "", photo_url: r["Photo_URL"] ?? "", part_qr: r["Part_QR"] ?? "",
     part_description: r["Part_Description"] ?? "", qty_used: toNum(r["Qty_Used"]), correlation_id: r["Correlation_ID"] ?? "",
+  };
+}
+
+function mapShiftReport(r: Record<string, string>): ShiftReport {
+  const yn = (v: string | undefined) => /^y/i.test(String(v ?? "").trim());   // "Yes" → true
+  return {
+    report_id: r["Report_ID"] ?? "", date: r["Date"] ?? "", shift: r["Shift"] ?? "",
+    start_viper: r["Start_Status_ViperDet"] ?? "", start_viper_notes: r["Start_Notes_ViperDet"] ?? "",
+    start_axxis: r["Start_Status_Axxis"] ?? "", start_axxis_notes: r["Start_Notes_Axxis"] ?? "",
+    dead_time: yn(r["Dead_Time"]), dead_time_reasons: r["Dead_Time_Reasons"] ?? "",
+    staff_all_present: yn(r["Staff_All_Present"]), staff_missing_count: toNum(r["Staff_Missing_Count"]),
+    staff_missing_reason: r["Staff_Missing_Reason"] ?? "", staff_notes: r["Staff_Notes"] ?? "",
+    qc_issues: yn(r["QC_Issues"]), qc_notes: r["QC_Notes"] ?? "",
+    materials_shortage: yn(r["Materials_Shortage"]), materials_notes: r["Materials_Notes"] ?? "",
+    handover_notes: r["Handover_Notes"] ?? "", other_notes: r["Other_Notes"] ?? "",
+    submitted_by: r["Submitted_By"] ?? "", submitted_at: orNull(r["Submitted_At"]),
   };
 }
 
@@ -507,6 +536,12 @@ export const api = {
     try {
       if (MODE === "gviz") return { items: (await gvizTab("Ticket_Events")).map(mapTicketEvent).filter((e) => e.ticket_id) };
       return await getJson<{ items: TicketEvent[] }>("ticketEvents");
+    } catch { return { items: [] }; }
+  },
+  async eosReports(): Promise<{ items: ShiftReport[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Shift_Reports")).map(mapShiftReport).filter((r) => r.report_id) };
+      return await getJson<{ items: ShiftReport[] }>("eosReports");
     } catch { return { items: [] }; }
   },
   async manufacturableLengths(): Promise<{ items: ManufacturableLength[] }> {
