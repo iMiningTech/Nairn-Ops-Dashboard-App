@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -112,6 +112,7 @@ export default function Dashboard() {
   const [batchContents, setBatchContents] = useState<BatchContent[]>([]);
   const [lengths, setLengths] = useState<ManufacturableLength[]>([]);
   const [reference, setReference] = useState<RefRow[]>([]);
+  const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [ticketEvents, setTicketEvents] = useState<TicketEvent[]>([]);
   const [eos, setEos] = useState<ShiftReport[]>([]);
@@ -140,7 +141,7 @@ export default function Dashboard() {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const [stock, tx, us, tg, qcr, dc, bcs, ml, mr, tk, te, er] = await Promise.all([
+      const [stock, tx, us, tg, qcr, dc, bcs, ml, mr, cap, tk, te, er] = await Promise.all([
         api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
@@ -149,6 +150,7 @@ export default function Dashboard() {
         api.batchContents().catch(() => ({ items: [] as BatchContent[] })),
         api.manufacturableLengths().catch(() => ({ items: [] as ManufacturableLength[] })),
         api.manufacturingReference().catch(() => ({ items: [] as RefRow[] })),
+        api.manufacturingCapabilities().catch(() => ({ items: [] as Capability[] })),
         api.tickets().catch(() => ({ items: [] as Ticket[] })),
         api.ticketEvents().catch(() => ({ items: [] as TicketEvent[] })),
         api.eosReports().catch(() => ({ items: [] as ShiftReport[] })),
@@ -162,6 +164,7 @@ export default function Dashboard() {
       setBatchContents(bcs.items || []);
       setLengths(ml.items || []);
       setReference(mr.items || []);
+      setCapabilities(cap.items || []);
       setTickets(tk.items || []);
       setTicketEvents(te.items || []);
       setEos(er.items || []);
@@ -291,7 +294,7 @@ export default function Dashboard() {
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}
-              {view === "capabilities" && <CapabilitiesView lengths={lengths} reference={reference} />}
+              {view === "capabilities" && <CapabilitiesView lengths={lengths} reference={reference} capabilities={capabilities} />}
             </div>
           )}
         </main>
@@ -1949,7 +1952,30 @@ function MaintenanceView({ items }: { items: InventoryItem[] }) {
 }
 
 // ── Capabilities (manufacturing cheat sheet) — printable ─────────────────────
-function CapabilitiesView({ lengths, reference }: { lengths: ManufacturableLength[]; reference: RefRow[] }) {
+// Little isometric carton icon, tinted to the product family — the box "graphic".
+function BoxGlyph({ color }: { color: string }) {
+  return (
+    <svg width="44" height="44" viewBox="0 0 48 48" className="shrink-0" aria-hidden>
+      <polygon points="24,4 42,13 24,22 6,13" fill={color} opacity="0.35" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+      <polygon points="6,13 24,22 24,44 6,35" fill={color} opacity="0.55" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+      <polygon points="42,13 24,22 24,44 42,35" fill={color} opacity="0.85" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CapabilitiesView({ lengths, reference, capabilities }: { lengths: ManufacturableLength[]; reference: RefRow[]; capabilities: Capability[] }) {
+  const [capLine, setCapLine] = useState<"All" | "ViperDet" | "Axxis">("All");
+  const [capPt, setCapPt] = useState("all");
+  const [capQ, setCapQ] = useState("");
+  const capTypes = useMemo(() => Array.from(new Set(capabilities.map((c) => c.product_type).filter(Boolean))).sort(), [capabilities]);
+  const caps = useMemo(() => {
+    const q = capQ.trim().toLowerCase();
+    return capabilities
+      .filter((c) => (capLine === "All" || c.line === capLine) && (capPt === "all" || c.product_type === capPt)
+        && (!q || `${c.product_type} ${c.length} ${c.delay} ${c.mfr_part_no} ${c.financial_no}`.toLowerCase().includes(q)))
+      .sort((a, b) => a.line.localeCompare(b.line) || a.product_type.localeCompare(b.product_type) || (parseFloat(a.length) || 0) - (parseFloat(b.length) || 0) || a.delay.localeCompare(b.delay));
+  }, [capabilities, capLine, capPt, capQ]);
+  const capFamColour = (pt: string) => FAMILY_COLOURS[pt.toUpperCase()] || "#64748b";
   // Lengths each line can make, from Manufacturable_Lengths (Active only).
   const toFeet = (m: number) => (m * 3.28084).toFixed(1);
   const byLine = useMemo(() => {
@@ -1979,6 +2005,65 @@ function CapabilitiesView({ lengths, reference }: { lengths: ManufacturableLengt
           <Printer size={15} /> Print / Save PDF
         </button>
       </div>
+
+      {/* Production catalogue — box specs from Manufacturing_Capabilities */}
+      <Card className="print-card"><CardBody>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-fg">Production catalogue — box specs</div>
+            <div className="text-xs text-muted">Everything we&apos;ve produced, with units per box, box weight &amp; size. We can make other options too — this is the known-figures cheat sheet.</div>
+          </div>
+          <div className="no-print flex flex-wrap items-center gap-2">
+            <div className="flex gap-1.5">
+              {(["All", "ViperDet", "Axxis"] as const).map((l) => (
+                <button key={l} onClick={() => setCapLine(l)}
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs ${capLine === l ? "border-accent bg-accent font-semibold text-white" : "border-border bg-surface hover:bg-bg"}`}>{l}</button>
+              ))}
+            </div>
+            <select value={capPt} onChange={(e) => setCapPt(e.target.value)} className="rounded-lg border border-border bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent">
+              <option value="all">All products</option>
+              {capTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <input value={capQ} onChange={(e) => setCapQ(e.target.value)} placeholder="length / delay / part"
+                className="w-44 rounded-lg border border-border bg-bg py-1.5 pl-8 pr-3 text-xs outline-none focus:border-accent" />
+            </div>
+          </div>
+        </div>
+        <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {capTypes.map((t) => <span key={t} className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: capFamColour(t) }} /> {t}</span>)}
+          <span className="text-muted">· {caps.length} configuration(s)</span>
+        </div>
+        {caps.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted">No matching capabilities. {capabilities.length === 0 ? "Check the Manufacturing_Capabilities tab exists." : ""}</div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {caps.map((c, i) => {
+              const col = capFamColour(c.product_type);
+              return (
+                <div key={i} className="rounded-xl border border-border bg-surface p-3" style={{ borderTop: `3px solid ${col}` }}>
+                  <div className="flex items-start gap-3">
+                    <BoxGlyph color={col} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate font-semibold text-fg">{c.product_type} · {c.length}</span>
+                        {c.packaging_class && <span className="shrink-0 rounded border border-accent px-1 text-[10px] font-bold text-accent">{c.packaging_class}</span>}
+                      </div>
+                      <div className="truncate text-xs text-muted">{c.line}{c.delay ? ` · ${c.delay}` : ""}{c.mfr_part_no ? ` · ${c.mfr_part_no}` : ""}</div>
+                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
+                        <div><div className="text-[11px] uppercase tracking-wide text-muted">Units / box</div><div className="font-semibold text-fg">{c.units_per_box ? fmtNum(c.units_per_box) : "—"}</div></div>
+                        <div><div className="text-[11px] uppercase tracking-wide text-muted">Box weight</div><div className="font-semibold text-fg">{c.weight_avg ? `${c.weight_avg} kg` : "—"}{c.weight_min && c.weight_max && c.weight_min !== c.weight_max ? <span className="text-xs font-normal text-muted"> ({c.weight_min}–{c.weight_max})</span> : null}</div></div>
+                        <div className="col-span-2"><div className="text-[11px] uppercase tracking-wide text-muted">Box size (W×D×H)</div><div className="font-medium text-fg">{c.box_dimensions || "—"}</div></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardBody></Card>
 
       {/* Lengths per line (live from Manufacturable_Lengths) */}
       <Card className="print-card"><CardBody>

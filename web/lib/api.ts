@@ -156,6 +156,15 @@ export type ShiftReport = {
 
 // Reference / cheat-sheet data for the Capabilities tab.
 export type ManufacturableLength = { line: string; length_display: string; length_numeric: number; active: boolean };
+
+// One production capability (from Manufacturing_Capabilities — auto-generated
+// from historical finished-good boxes). Box weights/dimensions per variant.
+export type Capability = {
+  line: string; product_type: string; length: string; delay: string; packaging_class: string;
+  financial_no: string; mfr_part_no: string; units_per_box: number; box_dimensions: string;
+  weight_avg: number; weight_min: number; weight_max: number; boxes_recorded: number;
+  first_produced: string; last_produced: string;
+};
 // Editable Manufacturing_Reference tab: rows grouped by Section.
 export type RefRow = { section: string; item: string; value: string; detail: string; colour: string };
 
@@ -320,6 +329,33 @@ function mapTicketEvent(r: Record<string, string>): TicketEvent {
     user: r["User"] ?? "", from_value: r["From_Value"] ?? "", to_value: r["To_Value"] ?? "",
     notes: r["Notes"] ?? "", photo_url: r["Photo_URL"] ?? "", part_qr: r["Part_QR"] ?? "",
     part_description: r["Part_Description"] ?? "", qty_used: toNum(r["Qty_Used"]), correlation_id: r["Correlation_ID"] ?? "",
+  };
+}
+
+// Numbers in Manufacturing_Capabilities that Sheets auto-formatted as dates
+// (small integers like a box count) come back as "1900-01-23" — recover the
+// underlying serial. Plain numeric strings pass straight through.
+function capNum(v?: string): number {
+  const s = String(v ?? "").trim();
+  if (!s) return 0;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const t = Date.parse(s.slice(0, 10) + "T00:00:00Z"), base = Date.parse("1899-12-30T00:00:00Z");
+    if (!isNaN(t)) return Math.round((t - base) / 86400000);
+  }
+  const n = parseFloat(s.replace(/[, ]/g, ""));
+  return isNaN(n) ? 0 : n;
+}
+function mapCapability(r: Record<string, string>): Capability {
+  // The first column header is merged with a title note, so resolve it by suffix.
+  const lineKey = r["Production_Line"] !== undefined ? "Production_Line" : (Object.keys(r).find((k) => k.trim().endsWith("Production_Line")) ?? "Production_Line");
+  return {
+    line: (r[lineKey] ?? "").trim(), product_type: r["ProductType"] ?? "", length: r["Length"] ?? "",
+    delay: r["Delay_Combination"] ?? "", packaging_class: r["Packaging_Class"] ?? "",
+    financial_no: r["Financial_No"] ?? "", mfr_part_no: r["Mfr_Part_No"] ?? "",
+    units_per_box: capNum(r["Units_Per_Box"]), box_dimensions: r["Box_Dimensions"] ?? "",
+    weight_avg: capNum(r["Box_Weight_Kg_Avg"]), weight_min: capNum(r["Box_Weight_Kg_Min"]), weight_max: capNum(r["Box_Weight_Kg_Max"]),
+    boxes_recorded: capNum(r["Boxes_Recorded"]),
+    first_produced: r["First_Produced"] ?? "", last_produced: r["Last_Produced"] ?? "",
   };
 }
 
@@ -551,6 +587,12 @@ export const api = {
         length_numeric: toNum(r["Length_Numeric"]), active: /true/i.test(r["Active"] ?? ""),
       })).filter((l) => l.line) };
       return await getJson<{ items: ManufacturableLength[] }>("manufacturableLengths");
+    } catch { return { items: [] }; }
+  },
+  async manufacturingCapabilities(): Promise<{ items: Capability[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Manufacturing_Capabilities")).map(mapCapability).filter((c) => c.line === "ViperDet" || c.line === "Axxis") };
+      return await getJson<{ items: Capability[] }>("manufacturingCapabilities");
     } catch { return { items: [] }; }
   },
   // Manufacturing_Reference is a tab the team creates — tolerate its absence.
