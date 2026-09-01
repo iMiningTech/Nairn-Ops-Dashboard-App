@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type Breakdown, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport } from "@/lib/api";
+import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -23,7 +23,7 @@ import {
   type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox, type FinResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
-import { breakdownSummary, qcSummary, lastDecon, logDayKey } from "@/lib/logs";
+import { qcSummary, lastDecon } from "@/lib/logs";
 import { ticketRows, ticketMetrics, fmtHours, OPEN_STATUSES, type TicketRow } from "@/lib/tickets";
 import { reportForDay, eosInRange, eosSummary, shiftFlags, isCleanShift, eosDay } from "@/lib/eos";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
@@ -107,7 +107,6 @@ export default function Dashboard() {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [targets, setTargets] = useState<DailyTarget[]>([]);
-  const [breakdowns, setBreakdowns] = useState<Breakdown[]>([]);
   const [qc, setQc] = useState<QcCheck[]>([]);
   const [decon, setDecon] = useState<Decon[]>([]);
   const [batchContents, setBatchContents] = useState<BatchContent[]>([]);
@@ -141,11 +140,10 @@ export default function Dashboard() {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const [stock, tx, us, tg, bd, qcr, dc, bcs, ml, mr, tk, te, er] = await Promise.all([
+      const [stock, tx, us, tg, qcr, dc, bcs, ml, mr, tk, te, er] = await Promise.all([
         api.stockOnHand(), api.transactions(),
         api.users().catch(() => ({ items: [] as User[] })),
         api.targets().catch(() => ({ items: [] as DailyTarget[] })),
-        api.breakdowns().catch(() => ({ items: [] as Breakdown[] })),
         api.qcChecks().catch(() => ({ items: [] as QcCheck[] })),
         api.decon().catch(() => ({ items: [] as Decon[] })),
         api.batchContents().catch(() => ({ items: [] as BatchContent[] })),
@@ -159,7 +157,6 @@ export default function Dashboard() {
       setTxns(tx.items || []);
       setUsers(us.items || []);
       setTargets(tg.items || []);
-      setBreakdowns(bd.items || []);
       setQc(qcr.items || []);
       setDecon(dc.items || []);
       setBatchContents(bcs.items || []);
@@ -280,9 +277,9 @@ export default function Dashboard() {
             <div className="text-sm text-muted">Loading…</div>
           ) : (
             <div className="space-y-6">
-              {view === "overview" && <OverviewView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} decon={decon} eos={eos} tv={tv} />}
-              {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} breakdowns={breakdowns} qc={qc} eos={eos} month={hi.slice(0, 7)} />}
-              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} breakdowns={breakdowns} qc={qc} contents={batchContents} tickets={tickets} events={ticketEvents} eos={eos} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
+              {view === "overview" && <OverviewView items={items} txns={txns} targets={targets} tickets={tickets} events={ticketEvents} qc={qc} decon={decon} eos={eos} tv={tv} />}
+              {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} tickets={tickets} events={ticketEvents} qc={qc} eos={eos} month={hi.slice(0, 7)} />}
+              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} qc={qc} contents={batchContents} tickets={tickets} events={ticketEvents} eos={eos} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
               {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
@@ -482,8 +479,8 @@ function EosReportCard({ report, title }: { report: ShiftReport | null; title: s
   );
 }
 
-function OverviewView({ items, txns, targets, breakdowns, qc, decon, eos, tv }:
-  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; decon: Decon[]; eos: ShiftReport[]; tv: boolean }) {
+function OverviewView({ items, txns, targets, tickets, events, qc, decon, eos, tv }:
+  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; tickets: Ticket[]; events: TicketEvent[]; qc: QcCheck[]; decon: Decon[]; eos: ShiftReport[]; tv: boolean }) {
   const today = todayKey();
   const tomorrow = dayKeyOffset(1);
   const month = today.slice(0, 7);
@@ -492,7 +489,8 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, eos, tv }:
   const axxis = useMemo(() => todaysRecords(items, txns, "Axxis"), [items, txns]);
   const shift = useMemo(() => shiftTimeline(items, txns, SHIFT_START_HOUR, nowMinutesInTz()), [items, txns]);
   const t1 = useMemo(() => lastT1Destruction(txns), [txns]);
-  const bd = useMemo(() => breakdownSummary(breakdowns, month), [breakdowns, month]);
+  const tkt = useMemo(() => ticketMetrics(tickets, events, `${month}-01`, `${month}-31`), [tickets, events, month]);
+  const lastTkt = useMemo(() => ticketRows(tickets, events)[0] || null, [tickets, events]);
   const qcSum = useMemo(() => qcSummary(qc, today, month), [qc, today, month]);
   const dcn = useMemo(() => lastDecon(decon), [decon]);
   const { rows: perDay, best } = useMemo(() => productionByDay(items, month), [items, month]);
@@ -596,14 +594,14 @@ function OverviewView({ items, txns, targets, breakdowns, qc, decon, eos, tv }:
               </>
             ) : <div className="mt-2 text-sm text-muted">No QC data available.</div>}
           </CardBody></Card>
-          <Card className={bd.last && bd.last.nature === "Critical Breakdown" ? "border-t-4 border-t-danger" : ""}><CardBody>
-            <div className="flex items-center gap-2"><WrenchIcon size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Breakdowns</span></div>
-            {bd.last ? (
-              <>
-                <div className="mt-2 text-sm">Last: <span className="font-semibold text-fg">{fmtTime(bd.last.at)}</span> · {bd.last.line} {bd.last.station ? `· ${bd.last.station}` : ""}</div>
-                <div className="mt-1 text-sm text-muted">{bd.monthCount} this month · {fmtMins(bd.monthDowntimeMin)} downtime · {bd.daysSinceLast === 0 ? "today" : `${bd.daysSinceLast}d ago`}</div>
-              </>
-            ) : <div className="mt-2 text-sm text-muted">No breakdowns logged.</div>}
+          <Card className={tkt.openCriticalHigh ? "border-t-4 border-t-danger" : tkt.openTotal ? "border-t-4 border-t-warn" : ""}><CardBody>
+            <div className="flex items-center gap-2"><WrenchIcon size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Breakdowns (tickets)</span></div>
+            <div className="mt-2 text-2xl font-semibold text-fg">{fmtNum(tkt.openTotal)}<span className="text-base font-normal text-muted"> open</span></div>
+            <div className="mt-1 text-sm text-muted">
+              {tkt.openCriticalHigh ? <span className="font-semibold text-danger">{tkt.openCriticalHigh} Critical/High · </span> : null}
+              {tkt.raised} raised this month{tkt.avgResolveHours != null ? ` · avg resolve ${fmtHours(tkt.avgResolveHours)}` : ""}
+            </div>
+            {lastTkt ? <div className="mt-1 text-xs text-muted">Last: <span className="font-medium text-fg">{lastTkt.title || lastTkt.id}</span> · {fmtTime(lastTkt.created_at)}</div> : null}
           </CardBody></Card>
           <Card className={t1 && t1.daysSince > 14 ? "border-t-4 border-t-danger" : t1 && t1.daysSince > 7 ? "border-t-4 border-t-warn" : ""}><CardBody>
             <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-accent" /><span className="text-sm font-semibold text-fg">Last T1 destruction</span></div>
@@ -646,13 +644,13 @@ function TargetTable({ rows }: { rows: DailyTarget[] }) {
 
 // ── MONTHLY REPORT ───────────────────────────────────────────────────────────
 // Month is driven by the sidebar date picker (any day in the month).
-function MonthlyView({ items, txns, targets, breakdowns, qc, eos, month: m }:
-  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; eos: ShiftReport[]; month: string }) {
+function MonthlyView({ items, txns, targets, tickets, events, qc, eos, month: m }:
+  { items: InventoryItem[]; txns: Transaction[]; targets: DailyTarget[]; tickets: Ticket[]; events: TicketEvent[]; qc: QcCheck[]; eos: ShiftReport[]; month: string }) {
   const sd = useMemo(() => startDeadtimeByDay(items, txns, SHIFT_START_HOUR, m), [items, txns, m]);
   const tot = useMemo(() => monthTotals(items, m), [items, m]);
   const prod = useMemo(() => productionByDay(items, m), [items, m]);
   const qcS = useMemo(() => qcSummary(qc, "", m), [qc, m]);
-  const bdS = useMemo(() => breakdownSummary(breakdowns, m), [breakdowns, m]);
+  const tkt = useMemo(() => ticketMetrics(tickets, events, `${m}-01`, `${m}-31`), [tickets, events, m]);
   const eosMonth = useMemo(() => eosInRange(eos, `${m}-01`, `${m}-31`), [eos, m]);
   const eosSum = useMemo(() => eosSummary(eosMonth), [eosMonth]);
   // Gaps = production days with no end-of-shift report (the "missing report" signal).
@@ -691,8 +689,8 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, eos, month: m }:
         <Stat label="Production (units)" value={fmtNum(tot.total)} sub={`best ${prod.best.day ? shortDay(prod.best.day) : "—"}`} />
         <Stat label="Targets met" value={targetDays.length ? `${metDays}/${targetDays.length}` : "—"} status={targetDays.length && metDays < targetDays.length ? "warn" : "ok"} sub="days at/above target" />
         <Stat label="QC pass rate" value={qcS.monthRate != null ? `${Math.round(qcS.monthRate * 100)}%` : "—"} status={qcS.monthRate != null && qcS.monthRate < 0.98 ? "warn" : "ok"} sub={`${qcS.monthChecks} checks`} />
-        <Stat label="Breakdowns" value={bdS.monthCount} status={bdS.monthCount ? "warn" : "ok"} sub={`${bdS.byLine.ViperDet} VD · ${bdS.byLine.Axxis} AX`} />
-        <Stat label="Downtime" value={fmtMins(bdS.monthDowntimeMin)} status={bdS.monthDowntimeMin > 120 ? "warn" : "ok"} sub="logged breakdown time" />
+        <Stat label="Breakdown tickets" value={fmtNum(tkt.raised)} status={tkt.openTotal ? "warn" : "ok"} sub={`${tkt.openTotal} open · ${tkt.closed} closed`} />
+        <Stat label="Avg resolve" value={fmtHours(tkt.avgResolveHours)} status="ok" sub="closed tickets" />
       </div>
 
       <Card><CardBody>
@@ -796,16 +794,16 @@ function MonthlyView({ items, txns, targets, breakdowns, qc, eos, month: m }:
 // ── MONTHLY EXPORT ───────────────────────────────────────────────────────────
 // One-click consolidated Markdown export of every tab for a chosen month, built
 // to paste straight into Claude Desktop as the input for the human monthly report.
-function MonthlyExportView({ items, txns, users, targets, breakdowns, qc, contents, tickets, events, eos, defaultMonth, generatedAt }:
-  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; breakdowns: Breakdown[]; qc: QcCheck[]; contents: BatchContent[]; tickets: Ticket[]; events: TicketEvent[]; eos: ShiftReport[]; defaultMonth: string; generatedAt: string | null }) {
+function MonthlyExportView({ items, txns, users, targets, qc, contents, tickets, events, eos, defaultMonth, generatedAt }:
+  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; qc: QcCheck[]; contents: BatchContent[]; tickets: Ticket[]; events: TicketEvent[]; eos: ShiftReport[]; defaultMonth: string; generatedAt: string | null }) {
   const [month, setMonth] = useState(defaultMonth);
   const [copied, setCopied] = useState(false);
   const maxMonth = todayKey().slice(0, 7);
 
   const md = useMemo(() => buildMonthlyReport({
-    items, txns, users, targets, breakdowns, qc, contents, tickets, events, eos,
+    items, txns, users, targets, qc, contents, tickets, events, eos,
     month, todayKey: todayKey(), generatedAt, shiftStartHour: SHIFT_START_HOUR,
-  }), [items, txns, users, targets, breakdowns, qc, contents, tickets, events, eos, month, generatedAt]);
+  }), [items, txns, users, targets, qc, contents, tickets, events, eos, month, generatedAt]);
 
   const monthLabel = (() => { const [y, mm] = month.split("-").map(Number); return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }); })();
 

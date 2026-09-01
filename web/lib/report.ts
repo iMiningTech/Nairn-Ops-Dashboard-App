@@ -10,8 +10,7 @@
 // today for the in-progress month). Inventory sections are a live "as of now"
 // snapshot and are labelled as such.
 
-import type { InventoryItem, Transaction, User, DailyTarget, Breakdown, QcCheck, BatchContent, Ticket, TicketEvent, ShiftReport } from "@/lib/api";
-// (Breakdown kept in ReportInput for compatibility; breakdowns now come from tickets.)
+import type { InventoryItem, Transaction, User, DailyTarget, QcCheck, BatchContent, Ticket, TicketEvent, ShiftReport } from "@/lib/api";
 import { fmtNum, fmtMins, fmtClock, shortDay, fmtDate, fmtTime, dateKey } from "@/lib/utils";
 import {
   monthTotals, productionByDay, productionVariants, startDeadtimeByDay,
@@ -30,7 +29,6 @@ export type ReportInput = {
   txns: Transaction[];
   users: User[];
   targets: DailyTarget[];
-  breakdowns: Breakdown[];
   qc: QcCheck[];
   contents: BatchContent[];
   tickets: Ticket[];
