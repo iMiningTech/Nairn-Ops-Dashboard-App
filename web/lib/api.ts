@@ -127,7 +127,7 @@ export type Decon = { at: string; line: string; hmx_spill: boolean };
 // Tickets tab = one row per ticket (current state); Ticket_Events = append-only
 // audit trail. Replaces the old JotForm breakdown sheets for the Breakdowns tab.
 export type Ticket = {
-  id: string; line: string; line_detail: string; title: string; description: string;
+  id: string; line: string; line_detail: string; station: string; title: string; description: string;
   severity: string; status: string;
   created_by: string; created_at: string | null;
   assigned_to: string; assigned_at: string | null;
@@ -312,8 +312,12 @@ function mapDecon(r: Record<string, string>): Decon {
 }
 
 function mapTicket(r: Record<string, string>): Ticket {
+  // Station column was added later; tolerate its exact header name (any header
+  // containing "station").
+  const stationKey = r["Station"] !== undefined ? "Station" : (Object.keys(r).find((k) => /station/i.test(k)) ?? "");
+  const station = (stationKey ? r[stationKey] : "") ?? "";
   return {
-    id: r["Ticket_ID"] ?? "", line: r["Line"] ?? "", line_detail: r["Line_Detail"] ?? "",
+    id: r["Ticket_ID"] ?? "", line: r["Line"] ?? "", line_detail: r["Line_Detail"] ?? "", station,
     title: r["Title"] ?? "", description: r["Description"] ?? "",
     severity: r["Severity"] ?? "", status: r["Status"] ?? "",
     created_by: r["Created_By"] ?? "", created_at: orNull(r["Created_At"]),
@@ -448,6 +452,13 @@ function driveFileId(idField: string, urlField: string): string {
   const s = urlField || "";
   const m = s.match(/\/d\/([-\w]+)/) || s.match(/[?&]id=([-\w]+)/) || s.match(/[-\w]{25,}/);
   return m ? (m[1] || m[0]) : "";
+}
+
+// A Drive share/URL → embeddable thumbnail URL (falls back to the raw URL).
+// File must be shared "anyone with the link" to render.
+export function driveThumbUrl(url: string, size = 1000): string {
+  const id = driveFileId("", url || "");
+  return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w${size}` : (url || "").trim();
 }
 function mapSignatureRow(r: Record<string, string>): Signature {
   const id = driveFileId(r["Drive_File_ID"] ?? "", r["Drive_URL"] ?? "");
@@ -623,6 +634,15 @@ export const api = {
   async amendSale(qrs: string[], changes: { po?: string; customer?: string; markSold?: boolean }, user: string): Promise<{ updated: number; txns: number; qrs: string[]; po: string; customer: string }> {
     if (!BOL_API) throw new Error("Sale amendment not configured (set NEXT_PUBLIC_BOL_API).");
     const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "amendSale", qrs, po: changes.po ?? "", customer: changes.customer ?? "", mark_sold: !!changes.markSold, user }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
+  // Set the Station on a ticket that has none (or correct it). Writes the Tickets
+  // row and appends a STATION_SET Ticket_Event for audit.
+  async setTicketStation(ticketId: string, station: string, user: string): Promise<{ updated: number; ticket_id: string; station: string }> {
+    if (!BOL_API) throw new Error("Ticket write-back not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "setTicketStation", ticket_id: ticketId, station, user }) });
     const j = await res.json();
     if (j.error) throw new Error(j.error);
     return j;

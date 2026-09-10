@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
+import { api, driveThumbUrl, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -24,7 +24,7 @@ import {
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { qcSummary, lastDecon } from "@/lib/logs";
-import { ticketRows, ticketMetrics, fmtHours, OPEN_STATUSES, type TicketRow } from "@/lib/tickets";
+import { ticketRows, ticketMetrics, ticketDetail, fmtHours, OPEN_STATUSES, type TicketRow } from "@/lib/tickets";
 import { reportForDay, eosInRange, eosSummary, shiftFlags, isCleanShift, eosDay } from "@/lib/eos";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType, weighWaste } from "@/lib/destruction";
@@ -284,7 +284,7 @@ export default function Dashboard() {
               {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} tickets={tickets} events={ticketEvents} qc={qc} eos={eos} month={hi.slice(0, 7)} />}
               {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} qc={qc} contents={batchContents} tickets={tickets} events={ticketEvents} eos={eos} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
-              {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} />}
+              {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
               {view === "financial" && <FinancialLookupView items={items} />}
@@ -865,33 +865,164 @@ function MonthlyExportView({ items, txns, users, targets, qc, contents, tickets,
 }
 
 // ── BREAKDOWNS (maintenance tickets) ─────────────────────────────────────────
-function BreakdownsView({ tickets, events, range, rangeLabel }:
-  { tickets: Ticket[]; events: TicketEvent[]; range: DateRange; rangeLabel: string }) {
+// Drill-down for one breakdown ticket: problem, solution, images, event
+// timeline, parts — and an "add station" write-back for older tickets.
+function TicketDrillCard({ ticket, events, onClose, onSaved }:
+  { ticket: TicketRow; events: TicketEvent[]; onClose: () => void; onSaved: () => void }) {
+  const d = useMemo(() => ticketDetail(events, ticket.id), [events, ticket.id]);
+  const [stationInput, setStationInput] = useState("");
+  const [editor, setEditor] = useState(() => { try { return localStorage.getItem("nairn_editor") || ""; } catch { return ""; } });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [savedStation, setSavedStation] = useState<string | null>(null);
+  const station = savedStation || ticket.station;
+
+  async function saveStation() {
+    if (!stationInput.trim() || !editor.trim()) return;
+    setBusy(true); setErr(null);
+    try {
+      try { localStorage.setItem("nairn_editor", editor.trim()); } catch { /* ignore */ }
+      await api.setTicketStation(ticket.id, stationInput.trim(), editor.trim());
+      setSavedStation(stationInput.trim());
+      onSaved();
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const evDetail = (e: TicketEvent) => {
+    if (e.event_type === "STATUS_CHANGE") return `${e.from_value || "—"} → ${e.to_value}${e.notes ? ` · ${e.notes}` : ""}`;
+    if (e.event_type === "ASSIGNED") return e.to_value ? `assigned to ${e.to_value}` : "released";
+    if (e.event_type === "PART_USED") return `${e.part_description || e.part_qr}${e.qty_used ? ` ×${fmtNum(e.qty_used)}` : ""}`;
+    if (e.event_type === "PHOTO_ADDED") return e.notes || "photo added";
+    if (e.event_type === "STATION_SET") return `${e.from_value || "—"} → ${e.to_value}`;
+    return e.notes || e.to_value || "";
+  };
+
+  return (
+    <Card className="border-t-4 border-t-accent"><CardBody>
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">{ticket.id} — {ticket.title || "(no title)"}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+            <span>Station: <span className={`font-medium ${station ? "text-fg" : "text-warn"}`}>{station || "— none —"}</span></span>
+            <span>Line: <span className="text-fg">{ticket.line_full}</span></span>
+            <span>Severity: <span className="text-fg">{ticket.severity || "—"}</span></span>
+            <span>Status: <span className="text-fg">{ticket.status || "—"}</span></span>
+            <span>Raised: <span className="text-fg">{fmtTime(ticket.created_at)}</span> by {ticket.created_by || "—"}</span>
+            {ticket.closed_at ? <span>Closed: <span className="text-fg">{fmtTime(ticket.closed_at)}</span> by {ticket.closed_by || "—"}</span> : null}
+          </div>
+        </div>
+        <button onClick={onClose} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-bg"><X size={14} /> Close</button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-border p-3">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Problem</div>
+          <div className="text-sm text-fg">{ticket.description || ticket.title || "—"}</div>
+        </div>
+        <div className="rounded-xl border border-border p-3">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Solution</div>
+          <div className="text-sm text-fg">{ticket.resolution || d.closeNotes.join(" · ") || (ticket.status === "Closed" ? "(closed, no resolution text)" : "— not resolved yet —")}</div>
+        </div>
+      </div>
+
+      {/* Add station for older tickets without one */}
+      {!station && (
+        <div className="mt-3 rounded-xl border border-warn/40 bg-warn/5 p-3">
+          <div className="mb-2 text-xs font-semibold text-warn">This ticket has no station — add one so it&apos;s searchable by station.</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Station</div>
+              <input value={stationInput} onChange={(e) => setStationInput(e.target.value)} placeholder="e.g. Crimp 2 / Station 4"
+                className="w-44 rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent" />
+            </div>
+            <div>
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Your initials</div>
+              <input value={editor} onChange={(e) => setEditor(e.target.value)} placeholder="audit"
+                className="w-28 rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent" />
+            </div>
+            <button onClick={saveStation} disabled={busy || !stationInput.trim() || !editor.trim() || !api.bolEnabled}
+              className="rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50">
+              {busy ? "Saving…" : "Set station"}
+            </button>
+          </div>
+          {!api.bolEnabled && <div className="mt-2 text-xs text-warn">Write-back not configured (NEXT_PUBLIC_BOL_API).</div>}
+          {err && <div className="mt-2 flex items-center gap-2 text-sm text-danger"><AlertCircle size={15} /> {err}</div>}
+        </div>
+      )}
+
+      {/* Photos */}
+      {d.photos.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Photos ({d.photos.length})</div>
+          <div className="flex flex-wrap gap-2">
+            {d.photos.map((p, i) => (
+              <a key={i} href={p.url} target="_blank" rel="noreferrer" title={`${p.caption} · ${fmtTime(p.at)}`}
+                className="block overflow-hidden rounded-lg border border-border hover:border-accent">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={driveThumbUrl(p.url, 400)} alt={p.caption} className="h-28 w-28 object-cover" />
+              </a>
+            ))}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">Click to open full size. Images must be shared &quot;anyone with link&quot; in Drive to preview.</div>
+        </div>
+      )}
+
+      {/* Timeline */}
+      {d.events.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">History</div>
+          <div className="overflow-hidden rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <tbody>
+                {d.events.map((e, i) => (
+                  <tr key={i} className="border-t border-border first:border-t-0">
+                    <td className="whitespace-nowrap px-3 py-1.5 align-top text-xs text-muted">{fmtTime(e.timestamp)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 align-top text-xs font-medium text-fg">{e.event_type.replace(/_/g, " ").toLowerCase()}</td>
+                    <td className="px-3 py-1.5 align-top text-fg">{evDetail(e)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 align-top text-xs text-muted">{e.user}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </CardBody></Card>
+  );
+}
+
+function BreakdownsView({ tickets, events, range, rangeLabel, onSaved }:
+  { tickets: Ticket[]; events: TicketEvent[]; range: DateRange; rangeLabel: string; onSaved: () => void }) {
   const [line, setLine] = useState<"All" | "ViperDet" | "Axxis" | "Other">("All");
   const [scope, setScope] = useState<"raised" | "open" | "all">("raised");
+  const [station, setStation] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const allRows = useMemo(() => ticketRows(tickets, events), [tickets, events]);
   const m = useMemo(() => ticketMetrics(tickets, events, range.from, range.to), [tickets, events, range]);
+  const stationList = useMemo(() => Array.from(new Set(tickets.map((t) => t.station).filter((s) => s && s.trim()))).sort(), [tickets]);
 
   const inCreated = (t: TicketRow) => { const k = dateKey(t.created_at || ""); return !!k && k >= range.from && k <= range.to; };
+  const stq = station.trim().toLowerCase();
   const rows = useMemo(() => allRows.filter((t) =>
     (line === "All" || t.line === line) &&
-    (scope === "all" ? true : scope === "open" ? OPEN_STATUSES.includes(t.status) : inCreated(t))
-  ), [allRows, line, scope, range]); // eslint-disable-line react-hooks/exhaustive-deps
+    (scope === "all" ? true : scope === "open" ? OPEN_STATUSES.includes(t.status) : inCreated(t)) &&
+    (!stq || (t.station || "").toLowerCase().includes(stq))
+  ), [allRows, line, scope, range, stq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scopeLabel = scope === "open" ? "open now" : scope === "all" ? "all time" : rangeLabel;
+  const open = openId ? allRows.find((t) => t.id === openId) || null : null;
 
   const cols: Col[] = [
-    { key: "id", label: "Ticket" }, { key: "line_full", label: "Line" }, { key: "title", label: "Title" },
+    { key: "id", label: "Ticket" }, { key: "station", label: "Station", fmt: (v) => (String(v ?? "").trim() || "— add —") },
+    { key: "line_full", label: "Line" }, { key: "title", label: "Title" },
     { key: "severity", label: "Severity" }, { key: "status", label: "Status" },
-    { key: "created_at", label: "Created", fmt: fmtTs }, { key: "created_by", label: "By" },
-    { key: "assigned_to", label: "Assigned", fmt: (v) => (String(v ?? "").trim() || "—") },
+    { key: "created_at", label: "Created", fmt: fmtTs },
     { key: "resolve_hours", label: "Resolve", num: true, fmt: (v) => fmtHours(v as number | null) },
-    { key: "first_response_hours", label: "1st resp", num: true, fmt: (v) => fmtHours(v as number | null) },
-    { key: "resolution", label: "Resolution" },
   ];
   const exportCols: Col[] = [
-    { key: "id", label: "Ticket_ID" }, { key: "line", label: "Line" }, { key: "line_detail", label: "Line_Detail" },
+    { key: "id", label: "Ticket_ID" }, { key: "station", label: "Station" }, { key: "line", label: "Line" }, { key: "line_detail", label: "Line_Detail" },
     { key: "title", label: "Title" }, { key: "description", label: "Description" }, { key: "severity", label: "Severity" },
     { key: "status", label: "Status" }, { key: "created_by", label: "Created_By" }, { key: "created_at", label: "Created_At" },
     { key: "assigned_to", label: "Assigned_To" }, { key: "closed_by", label: "Closed_By" }, { key: "closed_at", label: "Closed_At" },
@@ -925,13 +1056,22 @@ function BreakdownsView({ tickets, events, range, rangeLabel }:
         <BarH data={m.byStatus} height={Math.max(200, m.byStatus.length * 30)} />
       </ChartCard>
 
+      {/* Drill-down for the selected ticket */}
+      {open && <TicketDrillCard ticket={open} events={events} onClose={() => setOpenId(null)} onSaved={onSaved} />}
+
       <Card><CardBody>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-fg">Tickets ({fmtNum(rows.length)}) · {scopeLabel}</div>
-            <div className="text-xs text-muted">Export follows these filters — hand it to auto-tech for the monthly report.</div>
+            <div className="text-sm font-semibold text-fg">Breakdown history ({fmtNum(rows.length)}) · {scopeLabel}</div>
+            <div className="text-xs text-muted">Click a ticket to read the problem, solution &amp; photos. Search a station + set scope to <b>All</b> for its full history.</div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <input list="stationlist" value={station} onChange={(e) => setStation(e.target.value)} placeholder="station"
+                className="w-36 rounded-lg border border-border bg-bg py-1.5 pl-8 pr-3 text-xs outline-none focus:border-accent" />
+              <datalist id="stationlist">{stationList.map((s) => <option key={s} value={s} />)}</datalist>
+            </div>
             <div className="flex gap-1.5">
               {(["All", "ViperDet", "Axxis", "Other"] as const).map((l) => (
                 <button key={l} onClick={() => setLine(l)}
@@ -939,7 +1079,7 @@ function BreakdownsView({ tickets, events, range, rangeLabel }:
               ))}
             </div>
             <div className="flex gap-1.5">
-              {([["raised", "Raised in range"], ["open", "Open now"], ["all", "All"]] as const).map(([s, lbl]) => (
+              {([["raised", "In range"], ["open", "Open now"], ["all", "All"]] as const).map(([s, lbl]) => (
                 <button key={s} onClick={() => setScope(s)}
                   className={`rounded-lg border px-2.5 py-1.5 text-xs ${scope === s ? "border-accent bg-accent font-semibold text-white" : "border-border bg-surface hover:bg-bg"}`}>{lbl}</button>
               ))}
@@ -953,6 +1093,7 @@ function BreakdownsView({ tickets, events, range, rangeLabel }:
         {tickets.length === 0
           ? <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted">No ticket data — check the <span className="font-mono">Tickets</span> tab exists in the sheet.</div>
           : <Grid cols={cols} rows={rows as unknown as Record<string, unknown>[]}
+              onRowClick={(r) => setOpenId(r.id as string)} activeRow={(r) => r.id === openId}
               tone={(r) => (r.severity === "Critical" ? "bad" : r.severity === "High" ? "warn" : undefined)} maxH="34rem" />}
       </CardBody></Card>
     </>

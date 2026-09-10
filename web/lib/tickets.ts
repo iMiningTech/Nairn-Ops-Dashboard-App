@@ -43,6 +43,21 @@ export function ticketRows(tickets: Ticket[], events: TicketEvent[]): TicketRow[
   })).sort((a, b) => (ms(b.created_at) || 0) - (ms(a.created_at) || 0));
 }
 
+// Full drill-down for one ticket: ordered event timeline, photos, notes, parts
+// used, and the solution/closing notes — for the breakdown-history search.
+export type TicketPhoto = { url: string; at: string | null; by: string; caption: string };
+export type TicketDetail = { events: TicketEvent[]; photos: TicketPhoto[]; notes: TicketEvent[]; parts: TicketEvent[]; closeNotes: string[] };
+export function ticketDetail(events: TicketEvent[], ticketId: string): TicketDetail {
+  const evs = events.filter((e) => e.ticket_id === ticketId)
+    .sort((a, b) => (ms(a.timestamp) || 0) - (ms(b.timestamp) || 0));
+  const photos = evs.filter((e) => e.photo_url && e.photo_url.trim())
+    .map((e) => ({ url: e.photo_url, at: e.timestamp, by: e.user, caption: e.notes || e.event_type }));
+  const notes = evs.filter((e) => e.event_type === "NOTE_ADDED" && e.notes.trim());
+  const parts = evs.filter((e) => e.event_type === "PART_USED");
+  const closeNotes = evs.filter((e) => e.event_type === "STATUS_CHANGE" && e.to_value === "Closed" && e.notes.trim()).map((e) => e.notes);
+  return { events: evs, photos, notes, parts, closeNotes };
+}
+
 export type TicketMetrics = {
   openTotal: number; inProgress: number; awaitingParts: number; openCriticalHigh: number;
   raised: number; closed: number; cancelled: number;

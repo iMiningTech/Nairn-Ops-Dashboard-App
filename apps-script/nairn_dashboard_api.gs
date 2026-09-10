@@ -72,6 +72,7 @@ function doPost(e) {
     try { body = JSON.parse(e.postData.contents); } catch (_) { return _json({ error: 'bad request body' }); }
     if (body.action === 'createBol') return _json(createBol_(body));
     if (body.action === 'updatePo' || body.action === 'amendSale') return _json(amendSale_(body));
+    if (body.action === 'setTicketStation') return _json(setTicketStation_(body));
     return _json({ error: 'unknown action' });
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -216,6 +217,63 @@ function amendSale_(b) {
 function setCol_(row, headers, name, value) {
   var i = headers.indexOf(name);
   if (i >= 0) row[i] = value;
+}
+
+// ── Write-back: set a ticket's Station (retro-fit older tickets) ─────────────
+// Sets the Station cell on the Tickets row and appends a STATION_SET audit event.
+//   POST {action:'setTicketStation', ticket_id:'TKT-2026-0007', station:'Crimp 2', user:'AT'}
+function setTicketStation_(b) {
+  var ticketId = String(b.ticket_id || '').trim();
+  var station = String(b.station == null ? '' : b.station).trim();
+  var user = String(b.user || '').trim() || 'dashboard';
+  if (!ticketId || !station) return { error: 'ticket_id and station are required' };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = _ss();
+    var sh = ss.getSheetByName('Tickets');
+    if (!sh) return { error: 'Tickets sheet not found' };
+    var data = sh.getDataRange().getValues();
+    var head = data[0].map(function (h) { return String(h).trim(); });
+    var cId = head.indexOf('Ticket_ID');
+    var cStation = -1;
+    for (var j = 0; j < head.length; j++) { if (/station/i.test(head[j])) { cStation = j; break; } }
+    var cUpdAt = head.indexOf('Last_Updated_At'), cUpdBy = head.indexOf('Last_Updated_By');
+    if (cId < 0) return { error: 'Ticket_ID column missing' };
+    if (cStation < 0) return { error: 'Station column not found in Tickets' };
+
+    var tz = ss.getSpreadsheetTimeZone();
+    var nowStr = Utilities.formatDate(new Date(), tz, 'M/d/yyyy H:mm:ss');
+    var oldStation = '', found = false;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][cId]).trim() !== ticketId) continue;
+      found = true;
+      oldStation = String(data[i][cStation] || '').trim();
+      sh.getRange(i + 1, cStation + 1).setValue(station);
+      if (cUpdAt >= 0) sh.getRange(i + 1, cUpdAt + 1).setValue(nowStr);
+      if (cUpdBy >= 0) sh.getRange(i + 1, cUpdBy + 1).setValue(user);
+      break;
+    }
+    if (!found) return { error: 'Ticket ' + ticketId + ' not found' };
+
+    var ev = ss.getSheetByName('Ticket_Events');
+    if (ev) {
+      var ehead = ev.getRange(1, 1, 1, ev.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+      var row = new Array(ehead.length).fill('');
+      setCol_(row, ehead, 'Timestamp', nowStr);
+      setCol_(row, ehead, 'Ticket_ID', ticketId);
+      setCol_(row, ehead, 'Event_Type', 'STATION_SET');
+      setCol_(row, ehead, 'User', user);
+      setCol_(row, ehead, 'From_Value', oldStation);
+      setCol_(row, ehead, 'To_Value', station);
+      setCol_(row, ehead, 'Notes', 'Station set via dashboard');
+      ev.appendRow(row);
+    }
+    return { updated: 1, ticket_id: ticketId, station: station };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function bols_() {
