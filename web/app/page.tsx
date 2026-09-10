@@ -25,6 +25,7 @@ import {
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
 import { qcSummary, lastDecon } from "@/lib/logs";
 import { ticketRows, ticketMetrics, ticketDetail, fmtHours, OPEN_STATUSES, type TicketRow } from "@/lib/tickets";
+import { STATIONS, stationsForLine } from "@/lib/stations";
 import { reportForDay, eosInRange, eosSummary, shiftFlags, isCleanShift, eosDay } from "@/lib/eos";
 import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffSiteOrphan } from "@/lib/sales";
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType, weighWaste } from "@/lib/destruction";
@@ -932,9 +933,12 @@ function TicketDrillCard({ ticket, events, onClose, onSaved }:
           <div className="mb-2 text-xs font-semibold text-warn">This ticket has no station — add one so it&apos;s searchable by station.</div>
           <div className="flex flex-wrap items-end gap-2">
             <div>
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Station</div>
-              <input value={stationInput} onChange={(e) => setStationInput(e.target.value)} placeholder="e.g. Crimp 2 / Station 4"
-                className="w-44 rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent" />
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Station · {ticket.line_full}</div>
+              <select value={stationInput} onChange={(e) => setStationInput(e.target.value)}
+                className="w-56 rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent">
+                <option value="">— select station —</option>
+                {stationsForLine(ticket.line).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
             </div>
             <div>
               <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Your initials</div>
@@ -1001,15 +1005,17 @@ function BreakdownsView({ tickets, events, range, rangeLabel, onSaved }:
 
   const allRows = useMemo(() => ticketRows(tickets, events), [tickets, events]);
   const m = useMemo(() => ticketMetrics(tickets, events, range.from, range.to), [tickets, events, range]);
-  const stationList = useMemo(() => Array.from(new Set(tickets.map((t) => t.station).filter((s) => s && s.trim()))).sort(), [tickets]);
+  // Station numbers aren't unique across lines, but the full station STRING is
+  // (the name differs), so exact-string equality is unambiguous. Offer the
+  // selected line's list, or the union when line is All/Other.
+  const stationOptions = line === "ViperDet" || line === "Axxis" ? STATIONS[line] : stationsForLine("");
 
   const inCreated = (t: TicketRow) => { const k = dateKey(t.created_at || ""); return !!k && k >= range.from && k <= range.to; };
-  const stq = station.trim().toLowerCase();
   const rows = useMemo(() => allRows.filter((t) =>
     (line === "All" || t.line === line) &&
     (scope === "all" ? true : scope === "open" ? OPEN_STATUSES.includes(t.status) : inCreated(t)) &&
-    (!stq || (t.station || "").toLowerCase().includes(stq))
-  ), [allRows, line, scope, range, stq]); // eslint-disable-line react-hooks/exhaustive-deps
+    (!station || (t.station || "") === station)
+  ), [allRows, line, scope, range, station]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scopeLabel = scope === "open" ? "open now" : scope === "all" ? "all time" : rangeLabel;
   const open = openId ? allRows.find((t) => t.id === openId) || null : null;
@@ -1066,15 +1072,14 @@ function BreakdownsView({ tickets, events, range, rangeLabel, onSaved }:
             <div className="text-xs text-muted">Click a ticket to read the problem, solution &amp; photos. Search a station + set scope to <b>All</b> for its full history.</div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
-              <input list="stationlist" value={station} onChange={(e) => setStation(e.target.value)} placeholder="station"
-                className="w-36 rounded-lg border border-border bg-bg py-1.5 pl-8 pr-3 text-xs outline-none focus:border-accent" />
-              <datalist id="stationlist">{stationList.map((s) => <option key={s} value={s} />)}</datalist>
-            </div>
+            <select value={station} onChange={(e) => setStation(e.target.value)} title="Filter by station"
+              className="max-w-[13rem] rounded-lg border border-border bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent">
+              <option value="">All stations</option>
+              {stationOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
             <div className="flex gap-1.5">
               {(["All", "ViperDet", "Axxis", "Other"] as const).map((l) => (
-                <button key={l} onClick={() => setLine(l)}
+                <button key={l} onClick={() => { setLine(l); setStation(""); }}
                   className={`rounded-lg border px-2.5 py-1.5 text-xs ${line === l ? "border-accent bg-accent font-semibold text-white" : "border-border bg-surface hover:bg-bg"}`}>{l}</button>
               ))}
             </div>
