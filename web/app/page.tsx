@@ -2112,15 +2112,18 @@ function BoxGlyph({ color }: { color: string }) {
 function CapabilitiesView({ items, lengths, reference, capabilities }: { items: InventoryItem[]; lengths: ManufacturableLength[]; reference: RefRow[]; capabilities: Capability[] }) {
   const [capLine, setCapLine] = useState<"All" | "ViperDet" | "Axxis">("All");
   const [capPt, setCapPt] = useState("all");
+  const [capClass, setCapClass] = useState("all");
   const [capQ, setCapQ] = useState("");
   const capTypes = useMemo(() => Array.from(new Set(capabilities.map((c) => c.product_type).filter(Boolean))).sort(), [capabilities]);
+  const capClasses = useMemo(() => Array.from(new Set(capabilities.map((c) => c.packaging_class).filter(Boolean))).sort(), [capabilities]);
   const caps = useMemo(() => {
     const q = capQ.trim().toLowerCase();
     return capabilities
       .filter((c) => (capLine === "All" || c.line === capLine) && (capPt === "all" || c.product_type === capPt)
+        && (capClass === "all" || c.packaging_class === capClass)
         && (!q || `${c.product_type} ${c.length} ${c.delay} ${c.mfr_part_no} ${c.financial_no}`.toLowerCase().includes(q)))
       .sort((a, b) => a.line.localeCompare(b.line) || a.product_type.localeCompare(b.product_type) || (parseFloat(a.length) || 0) - (parseFloat(b.length) || 0) || a.delay.localeCompare(b.delay));
-  }, [capabilities, capLine, capPt, capQ]);
+  }, [capabilities, capLine, capPt, capClass, capQ]);
   const capFamColour = (pt: string) => FAMILY_COLOURS[pt.toUpperCase()] || "#64748b";
 
   // Available delays = every delay we HOLD IN STOCK as raw material (detonator
@@ -2309,6 +2312,10 @@ function CapabilitiesView({ items, lengths, reference, capabilities }: { items: 
             <select value={capPt} onChange={(e) => setCapPt(e.target.value)} className="rounded-lg border border-border bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent">
               <option value="all">All products</option>
               {capTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <select value={capClass} onChange={(e) => setCapClass(e.target.value)} title="Classification" className="rounded-lg border border-border bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent">
+              <option value="all">All classes</option>
+              {capClasses.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
             <div className="relative">
               <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />

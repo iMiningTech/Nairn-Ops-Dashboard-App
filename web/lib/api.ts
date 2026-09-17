@@ -600,9 +600,24 @@ export const api = {
       return await getJson<{ items: ManufacturableLength[] }>("manufacturableLengths");
     } catch { return { items: [] }; }
   },
+  // Auto-generated Manufacturing_Capabilities + an optional, hand-edited
+  // Manufacturing_Capabilities_Manual tab (for variants not yet produced, e.g.
+  // 1.4B — units/dimensions with weights still blank). Manual rows override the
+  // auto row for the same variant (line|product|length|delay|class), and add
+  // new ones. The manual tab is never overwritten by the rebuild script.
   async manufacturingCapabilities(): Promise<{ items: Capability[] }> {
     try {
-      if (MODE === "gviz") return { items: (await gvizTab("Manufacturing_Capabilities")).map(mapCapability).filter((c) => c.line === "ViperDet" || c.line === "Axxis") };
+      if (MODE === "gviz") {
+        const ok = (c: Capability) => c.line === "ViperDet" || c.line === "Axxis";
+        const auto = (await gvizTab("Manufacturing_Capabilities")).map(mapCapability).filter(ok);
+        let manual: Capability[] = [];
+        try { manual = (await gvizTab("Manufacturing_Capabilities_Manual")).map(mapCapability).filter(ok); } catch { /* optional tab */ }
+        const key = (c: Capability) => `${c.line}|${c.product_type}|${c.length}|${c.delay}|${c.packaging_class}`;
+        const m = new Map<string, Capability>();
+        for (const c of auto) m.set(key(c), c);
+        for (const c of manual) m.set(key(c), c);   // manual wins
+        return { items: Array.from(m.values()) };
+      }
       return await getJson<{ items: Capability[] }>("manufacturingCapabilities");
     } catch { return { items: [] }; }
   },
