@@ -2109,6 +2109,11 @@ function BoxGlyph({ color }: { color: string }) {
   );
 }
 
+// Empty-box (dry) mass in kg, subtracted before dividing by units to estimate
+// per-assembly mass. 0 = box dry weight not known yet, so "mass / unit" is GROSS
+// (includes packaging). Set this once the empty-box weight is measured.
+const CAPABILITY_BOX_DRY_KG = 0;
+
 function CapabilitiesView({ items, lengths, reference, capabilities }: { items: InventoryItem[]; lengths: ManufacturableLength[]; reference: RefRow[]; capabilities: Capability[] }) {
   const [capLine, setCapLine] = useState<"All" | "ViperDet" | "Axxis">("All");
   const [capPt, setCapPt] = useState("all");
@@ -2334,6 +2339,7 @@ function CapabilitiesView({ items, lengths, reference, capabilities }: { items: 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {caps.map((c, i) => {
               const col = capFamColour(c.product_type);
+              const massPerUnit = c.weight_avg > 0 && c.units_per_box > 0 ? Math.max(0, (c.weight_avg - CAPABILITY_BOX_DRY_KG) * 1000) / c.units_per_box : 0;
               return (
                 <div key={i} className="rounded-xl border border-border bg-surface p-3" style={{ borderTop: `3px solid ${col}` }}>
                   <div className="flex items-start gap-3">
@@ -2347,6 +2353,7 @@ function CapabilitiesView({ items, lengths, reference, capabilities }: { items: 
                       <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
                         <div><div className="text-[11px] uppercase tracking-wide text-muted">Units / box</div><div className="font-semibold text-fg">{c.units_per_box ? fmtNum(c.units_per_box) : "—"}</div></div>
                         <div><div className="text-[11px] uppercase tracking-wide text-muted">Box weight</div><div className="font-semibold text-fg">{c.weight_avg ? `${c.weight_avg} kg` : "—"}{c.weight_min && c.weight_max && c.weight_min !== c.weight_max ? <span className="text-xs font-normal text-muted"> ({c.weight_min}–{c.weight_max})</span> : null}</div></div>
+                        <div><div className="text-[11px] uppercase tracking-wide text-muted">Mass / unit{CAPABILITY_BOX_DRY_KG > 0 ? "" : " (gross)"}</div><div className="font-semibold text-fg">{massPerUnit ? `${Math.round(massPerUnit)} g` : "—"}</div></div>
                         <div className="col-span-2"><div className="text-[11px] uppercase tracking-wide text-muted">Box size (W×D×H)</div><div className="font-medium text-fg">{c.box_dimensions || "—"}</div></div>
                       </div>
                     </div>
