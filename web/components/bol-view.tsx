@@ -163,7 +163,10 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     const sig = r.signature_url ? signatures.find((s) => s.drive_url && s.drive_url === r.signature_url) : undefined;
     const consignor = r.consignor_name || (consignorSign ? CONSIGNOR_SIGNER : "");
     const applyMySig = consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase();
-    const docDate = r.date || fmtDate(new Date().toISOString());
+    // Missing register Date → fall back to when the BOL was ISSUED (Created_At),
+    // NOT today, so a reprint shows the real original date.
+    const createdDate = r.created_at ? fmtDate(r.created_at) : "";
+    const docDate = r.date || (createdDate && createdDate !== "—" ? createdDate : fmtDate(new Date().toISOString()));
     const receiverDate = (sig?.timestamp ? fmtDate(sig.timestamp) : "") || docDate;   // consignee date — always populated
     const consignorDate = docDate;                                                     // consignor date — always populated
     setDoc({ bol: bolObj, number: r.bol_no, date: docDate, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
