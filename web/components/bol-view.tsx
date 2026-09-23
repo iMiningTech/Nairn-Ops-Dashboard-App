@@ -118,12 +118,17 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     const shipTo = fields.shipTo.trim() || bol.customers.join(", ");
     const po = Array.from(new Set(selectedBoxes.map(poFor).filter(Boolean))).join(", ");
     setRegError(null);
-    const consignor = consignorSign && !fields.consignor.trim() ? CONSIGNOR_SIGNER : fields.consignor;
-    // Consignor date mirrors the consignee's signed date when there is one, else the document date.
-    const consignorDate = consignorSign ? (fields.receiverDate || fields.date) : "";
-    setDoc({ bol, number: draftNo, date: fields.date, po, shipTo, truck: fields.truck, trailer: fields.trailer,
+    // Keep an entered consignor name as-is; only default to the signatory when it's
+    // blank. Only overlay the signature when the name IS the signatory — never put
+    // it over someone else's name.
+    const consignor = fields.consignor.trim() || (consignorSign ? CONSIGNOR_SIGNER : "");
+    const applyMySig = consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase();
+    const docDate = fields.date.trim() || fmtDate(new Date().toISOString());   // never blank
+    const receiverDate = fields.receiverDate || docDate;   // consignee date — always populated
+    const consignorDate = docDate;                          // consignor date — always populated
+    setDoc({ bol, number: draftNo, date: docDate, po, shipTo, truck: fields.truck, trailer: fields.trailer,
       consignor, driver: fields.driver, signatureUrl: fields.signatureUrl, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false,
-      receiverDate: fields.receiverDate, consignorSigUrl: consignorSign ? CONSIGNOR_SIG_URL : "", consignorDate });
+      receiverDate, consignorSigUrl: applyMySig ? CONSIGNOR_SIG_URL : "", consignorDate });
   }
 
   async function registerAndPrint() {
@@ -153,14 +158,17 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
       classes: r.classes.split(",").map((s) => s.trim()).filter(Boolean), customers: [] };
     const qrs = r.box_qrs.split(",").map((s) => s.trim()).filter(Boolean);
     const po = Array.from(new Set(qrs.map(poForQr).filter(Boolean))).join(", ");
-    // Recover the receiver's signed date from the matching captured signature.
+    // Keep the stored consignor name; only default when blank. Only overlay the
+    // signature when the name is the signatory. All dates always populated.
     const sig = r.signature_url ? signatures.find((s) => s.drive_url && s.drive_url === r.signature_url) : undefined;
-    const receiverDate = sig?.timestamp ? fmtDate(sig.timestamp) : "";
     const consignor = r.consignor_name || (consignorSign ? CONSIGNOR_SIGNER : "");
-    const consignorDate = consignorSign ? (receiverDate || r.date) : "";
-    setDoc({ bol: bolObj, number: r.bol_no, date: r.date, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
+    const applyMySig = consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase();
+    const docDate = r.date || fmtDate(new Date().toISOString());
+    const receiverDate = (sig?.timestamp ? fmtDate(sig.timestamp) : "") || docDate;   // consignee date — always populated
+    const consignorDate = docDate;                                                     // consignor date — always populated
+    setDoc({ bol: bolObj, number: r.bol_no, date: docDate, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
       consignor, driver: r.driver_name, signatureUrl: r.signature_url, includeNeq: r.include_neq, qrs, issued: true,
-      receiverDate, consignorSigUrl: consignorSign ? CONSIGNOR_SIG_URL : "", consignorDate });
+      receiverDate, consignorSigUrl: applyMySig ? CONSIGNOR_SIG_URL : "", consignorDate });
   }
 
   // Body flag for print isolation + filename via document.title.
