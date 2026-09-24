@@ -12,14 +12,20 @@ const CONSIGNOR_FROM = "Nairn Det Plant";
 const CONSIGNOR_SIGNER = "Justin James";
 // Transparent PNG of the consignor's signature — place at web/public/consignor_sig.png.
 const CONSIGNOR_SIG_URL = "/consignor_sig.png";
+// Shown in place of a drawn signature when the consignor is auto-attributed to the
+// operator who was signed into the device when the sale was processed.
+const AUTO_STAMP = "Signed digitally — operator authenticated on the device at point of sale";
 
 type DocState = {
   bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string;
   consignor: string; driver: string; signatureUrl: string; includeNeq: boolean; qrs: string[]; issued: boolean;
-  receiverDate: string; consignorSigUrl: string; consignorDate: string;
+  receiverDate: string; consignorSigUrl: string; consignorStamp: string; consignorDate: string;
 };
 
 const poNorm = (s: string) => s.trim().toUpperCase();
+// A signature row is a consignor unless explicitly tagged so. Blank Role = legacy
+// receiver signature (all rows before the app added the Role column) = consignee.
+const isConsignorRole = (s: Signature) => s.role.trim().toLowerCase() === "consignor";
 
 export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transaction[] }) {
   // When each box was marked Sold (set aside) — from the Status→Sold transaction.
@@ -67,7 +73,7 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
   const poFor = (i: InventoryItem) => i.po_number || poByQr.get(i.qr) || "";
 
   const [sel, setSel] = useState<Set<string>>(new Set());
-  const [fields, setFields] = useState({ date: fmtDate(new Date().toISOString()), shipTo: "", truck: "", trailer: "", consignor: "", driver: "", signatureUrl: "", receiverDate: "" });
+  const [fields, setFields] = useState({ date: fmtDate(new Date().toISOString()), shipTo: "", truck: "", trailer: "", consignor: "", driver: "", signatureUrl: "", receiverDate: "", consignorSigUrl: "", consignorStamp: "", consignorDate: "" });
   const [consignorSign, setConsignorSign] = useState(() => { try { return localStorage.getItem("nairn_consignor_sign") === "1"; } catch { return false; } });
   const [includeNeq, setIncludeNeq] = useState(false);
   const [doc, setDoc] = useState<DocState | null>(null);
@@ -87,10 +93,23 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
       .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
   }, [selectedBoxes, signatures, poByQr]); // eslint-disable-line react-hooks/exhaustive-deps
   const matchPos = useMemo(() => Array.from(new Set(matchingSigs.map((s) => s.po_number))), [matchingSigs]);
+  // Route captured signatures to the right block by Role. Consignor rows are the
+  // shipper's signature; everything else (incl. legacy blank-Role rows) is the
+  // consignee/receiver signature.
+  const consigneeSigs = useMemo(() => matchingSigs.filter((s) => !isConsignorRole(s)), [matchingSigs]);
+  const consignorSigs = useMemo(() => matchingSigs.filter((s) => isConsignorRole(s)), [matchingSigs]);
+  // The operator logged into the device when this sale was processed — used to
+  // auto-attribute the consignor when there is no explicit consignor signature.
+  const saleOperator = useMemo(() => matchingSigs.find((s) => s.operator)?.operator || "", [matchingSigs]);
 
   const applySignature = (s: Signature) =>
     setFields((f) => ({ ...f, driver: s.receiver_name || f.driver, signatureUrl: s.drive_url, receiverDate: s.timestamp ? fmtDate(s.timestamp) : f.receiverDate }));
   const clearSignature = () => setFields((f) => ({ ...f, signatureUrl: "", receiverDate: "" }));
+  const applyConsignorSig = (s: Signature) =>
+    setFields((f) => ({ ...f, consignor: s.receiver_name || f.consignor, consignorSigUrl: s.drive_url, consignorStamp: "", consignorDate: s.timestamp ? fmtDate(s.timestamp) : f.consignorDate }));
+  const applyConsignorOperator = () =>
+    setFields((f) => ({ ...f, consignor: saleOperator, consignorSigUrl: "", consignorStamp: AUTO_STAMP }));
+  const clearConsignorSig = () => setFields((f) => ({ ...f, consignorSigUrl: "", consignorStamp: "", consignorDate: "" }));
 
   const toggle = (qr: string) => setSel((s) => { const n = new Set(s); n.has(qr) ? n.delete(qr) : n.add(qr); return n; });
   const toggleGroup = (boxes: InventoryItem[]) => setSel((s) => {
@@ -114,21 +133,46 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     (usedQr.has(a.qr) ? 1 : 0) - (usedQr.has(b.qr) ? 1 : 0)
     || (Date.parse(soldOn(b) || "") || 0) - (Date.parse(soldOn(a) || "") || 0);
 
+  // Resolve the consignor block by precedence, honouring anything already set on
+  // the form. Order: (1) a name/signature the operator entered or attached →
+  // kept as-is; (2) a captured Consignor-role signature for the PO → name +
+  // signature image; (3) the operator signed into the device at point of sale →
+  // name + a digital-attestation stamp (no drawn signature); (4) the personal
+  // "sign as consignor" fallback (Justin James's static signature).
+  function deriveConsignor(preset: { name: string; sigUrl: string; stamp: string; date: string }, fallbackDate: string) {
+    let name = preset.name.trim();
+    let sigUrl = preset.sigUrl;
+    let stamp = preset.stamp;
+    let date = preset.date || fallbackDate;
+    if (!name && !sigUrl && !stamp) {
+      const cs = consignorSigs[0];
+      if (cs) {
+        name = cs.receiver_name || "";
+        sigUrl = cs.drive_url || "";
+        date = cs.timestamp ? fmtDate(cs.timestamp) : fallbackDate;
+      } else if (saleOperator) {
+        name = saleOperator;
+        stamp = AUTO_STAMP;
+      } else if (consignorSign) {
+        name = CONSIGNOR_SIGNER;
+      }
+    }
+    // The personal static signature is only ever placed over the signatory's own
+    // name, and only when nothing else already fills the signature line.
+    if (!sigUrl && !stamp && consignorSign && name.toLowerCase() === CONSIGNOR_SIGNER.toLowerCase()) sigUrl = CONSIGNOR_SIG_URL;
+    return { name, sigUrl, stamp, date };
+  }
+
   function generate() {
     const shipTo = fields.shipTo.trim() || bol.customers.join(", ");
     const po = Array.from(new Set(selectedBoxes.map(poFor).filter(Boolean))).join(", ");
     setRegError(null);
-    // Keep an entered consignor name as-is; only default to the signatory when it's
-    // blank. Only overlay the signature when the name IS the signatory — never put
-    // it over someone else's name.
-    const consignor = fields.consignor.trim() || (consignorSign ? CONSIGNOR_SIGNER : "");
-    const applyMySig = consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase();
     const docDate = fields.date.trim() || fmtDate(new Date().toISOString());   // never blank
     const receiverDate = fields.receiverDate || docDate;   // consignee date — always populated
-    const consignorDate = docDate;                          // consignor date — always populated
+    const c = deriveConsignor({ name: fields.consignor, sigUrl: fields.consignorSigUrl, stamp: fields.consignorStamp, date: fields.consignorDate }, docDate);
     setDoc({ bol, number: draftNo, date: docDate, po, shipTo, truck: fields.truck, trailer: fields.trailer,
-      consignor, driver: fields.driver, signatureUrl: fields.signatureUrl, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false,
-      receiverDate, consignorSigUrl: applyMySig ? CONSIGNOR_SIG_URL : "", consignorDate });
+      consignor: c.name, driver: fields.driver, signatureUrl: fields.signatureUrl, includeNeq, qrs: selectedBoxes.map((b) => b.qr), issued: false,
+      receiverDate, consignorSigUrl: c.sigUrl, consignorStamp: c.stamp, consignorDate: c.date });
   }
 
   async function registerAndPrint() {
@@ -157,21 +201,36 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     const bolObj: Bol = { lines, totalPackages: r.total_packages, totalQuantity: r.total_quantity, totalNemKg: r.total_neq_kg,
       classes: r.classes.split(",").map((s) => s.trim()).filter(Boolean), customers: [] };
     const qrs = r.box_qrs.split(",").map((s) => s.trim()).filter(Boolean);
+    const pos = new Set(qrs.map(poForQr).filter(Boolean).map(poNorm));
     const po = Array.from(new Set(qrs.map(poForQr).filter(Boolean))).join(", ");
-    // Keep the stored consignor name; only default when blank. Only overlay the
-    // signature when the name is the signatory. All dates always populated.
     const sig = r.signature_url ? signatures.find((s) => s.drive_url && s.drive_url === r.signature_url) : undefined;
-    const consignor = r.consignor_name || (consignorSign ? CONSIGNOR_SIGNER : "");
-    const applyMySig = consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase();
     // Missing register Date → fall back to when the BOL was ISSUED (Created_At),
     // NOT today, so a reprint shows the real original date.
     const createdDate = r.created_at ? fmtDate(r.created_at) : "";
     const docDate = r.date || (createdDate && createdDate !== "—" ? createdDate : fmtDate(new Date().toISOString()));
     const receiverDate = (sig?.timestamp ? fmtDate(sig.timestamp) : "") || docDate;   // consignee date — always populated
-    const consignorDate = docDate;                                                     // consignor date — always populated
+    // Re-derive the consignor from the live Signatures tab by this BOL's PO, so a
+    // reprint reflects a consignor signature / operator attestation captured for it.
+    const poSigs = pos.size ? signatures.filter((s) => s.po_number && pos.has(poNorm(s.po_number))) : [];
+    const rConsignorSig = poSigs.find((s) => isConsignorRole(s) && s.drive_url);
+    const rOperator = poSigs.find((s) => s.operator)?.operator || "";
+    let consignor = r.consignor_name || "";
+    let consignorSigUrl = "", consignorStamp = "", consignorDate = docDate;
+    if (rConsignorSig) {
+      consignor = consignor || rConsignorSig.receiver_name;
+      consignorSigUrl = rConsignorSig.drive_url;
+      consignorDate = rConsignorSig.timestamp ? fmtDate(rConsignorSig.timestamp) : docDate;
+    } else if (consignor && rOperator && consignor.trim().toLowerCase() === rOperator.trim().toLowerCase()) {
+      consignorStamp = AUTO_STAMP;   // stored name is the sale operator → auto-attested
+    } else if (!consignor) {
+      if (rOperator) { consignor = rOperator; consignorStamp = AUTO_STAMP; }
+      else if (consignorSign) consignor = CONSIGNOR_SIGNER;
+    }
+    if (!consignorSigUrl && !consignorStamp && consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase())
+      consignorSigUrl = CONSIGNOR_SIG_URL;
     setDoc({ bol: bolObj, number: r.bol_no, date: docDate, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
       consignor, driver: r.driver_name, signatureUrl: r.signature_url, includeNeq: r.include_neq, qrs, issued: true,
-      receiverDate, consignorSigUrl: applyMySig ? CONSIGNOR_SIG_URL : "", consignorDate });
+      receiverDate, consignorSigUrl, consignorStamp, consignorDate });
   }
 
   // Body flag for print isolation + filename via document.title.
@@ -209,28 +268,71 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
             <PenLine size={16} className="mt-0.5 shrink-0 text-accent" />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-fg">
-                A receiver signature was captured for PO {matchPos.join(", ")} — auto-fill the receiver name and signature?
+                Signatures captured for PO {matchPos.join(", ")} — matched to this BOL by PO number.
               </div>
-              <div className="mt-2 space-y-2">
-                {matchingSigs.map((s) => {
-                  const active = fields.signatureUrl === s.drive_url;
-                  return (
-                    <div key={s.drive_file_id || s.timestamp} className="flex items-center gap-3 rounded-lg border border-border p-2">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={s.drive_url} alt="Captured signature" className="h-10 w-24 shrink-0 rounded bg-[#f3f4f6] object-contain" />
-                      <div className="min-w-0 flex-1 text-xs">
-                        <div className="truncate font-medium text-fg">{s.receiver_name || "(no name recorded)"}</div>
-                        <div className="text-muted">PO {s.po_number} · {fmtTime(s.timestamp)}{s.operator ? ` · ${s.operator}` : ""}{s.item_count ? ` · ${fmtNum(s.item_count)} item(s)` : ""}</div>
+
+              {/* Consignee (receiver) signatures */}
+              <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-muted">Consignee (receiver)</div>
+              {consigneeSigs.length === 0 ? (
+                <div className="mt-1 text-xs text-muted">No receiver signature captured for this PO yet.</div>
+              ) : (
+                <div className="mt-1 space-y-2">
+                  {consigneeSigs.map((s) => {
+                    const active = fields.signatureUrl === s.drive_url;
+                    return (
+                      <div key={s.drive_file_id || s.timestamp} className="flex items-center gap-3 rounded-lg border border-border p-2">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={s.drive_url} alt="Captured signature" className="h-10 w-24 shrink-0 rounded bg-[#f3f4f6] object-contain" />
+                        <div className="min-w-0 flex-1 text-xs">
+                          <div className="truncate font-medium text-fg">{s.receiver_name || "(no name recorded)"}</div>
+                          <div className="text-muted">PO {s.po_number} · {fmtTime(s.timestamp)}{s.operator ? ` · ${s.operator}` : ""}{s.item_count ? ` · ${fmtNum(s.item_count)} item(s)` : ""}</div>
+                        </div>
+                        {active ? (
+                          <button onClick={clearSignature} className="shrink-0 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted hover:bg-bg">Attached ✓ · Remove</button>
+                        ) : (
+                          <button onClick={() => applySignature(s)} className="shrink-0 rounded-lg bg-accent px-2 py-1 text-xs font-semibold text-white">Auto-fill</button>
+                        )}
                       </div>
-                      {active ? (
-                        <button onClick={clearSignature} className="shrink-0 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted hover:bg-bg">Attached ✓ · Remove</button>
-                      ) : (
-                        <button onClick={() => applySignature(s)} className="shrink-0 rounded-lg bg-accent px-2 py-1 text-xs font-semibold text-white">Auto-fill</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Consignor (shipper) signature */}
+              <div className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Consignor (shipper)</div>
+              {consignorSigs.length > 0 ? (
+                <div className="mt-1 space-y-2">
+                  {consignorSigs.map((s) => {
+                    const active = fields.consignorSigUrl === s.drive_url;
+                    return (
+                      <div key={s.drive_file_id || s.timestamp} className="flex items-center gap-3 rounded-lg border border-border p-2">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={s.drive_url} alt="Captured consignor signature" className="h-10 w-24 shrink-0 rounded bg-[#f3f4f6] object-contain" />
+                        <div className="min-w-0 flex-1 text-xs">
+                          <div className="truncate font-medium text-fg">{s.receiver_name || "(no name recorded)"}</div>
+                          <div className="text-muted">PO {s.po_number} · {fmtTime(s.timestamp)}{s.operator ? ` · ${s.operator}` : ""}</div>
+                        </div>
+                        {active ? (
+                          <button onClick={clearConsignorSig} className="shrink-0 rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted hover:bg-bg">Attached ✓ · Remove</button>
+                        ) : (
+                          <button onClick={() => applyConsignorSig(s)} className="shrink-0 rounded-lg bg-accent px-2 py-1 text-xs font-semibold text-white">Auto-fill</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-1 flex items-center gap-3 rounded-lg border border-dashed border-border p-2 text-xs">
+                  <div className="min-w-0 flex-1 text-muted">
+                    No consignor signature captured. {saleOperator
+                      ? <>Will be auto-signed as <b className="text-fg">{saleOperator}</b> (operator signed into the device at point of sale) with a digital attestation stamp{fields.consignor.trim() ? " — clear the consignor name to use this" : ""}.</>
+                      : <>Falls back to the <b className="text-fg">{CONSIGNOR_SIGNER}</b> signature if enabled below.</>}
+                  </div>
+                  {saleOperator && !fields.consignor.trim() && (
+                    <button onClick={applyConsignorOperator} className="shrink-0 rounded-lg bg-accent px-2 py-1 text-xs font-semibold text-white">Attest now</button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </CardBody></Card>
@@ -313,6 +415,20 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
             <Field label="Truck #" value={fields.truck} onChange={(v) => setFields((f) => ({ ...f, truck: v }))} />
             <Field label="Trailer #" value={fields.trailer} onChange={(v) => setFields((f) => ({ ...f, trailer: v }))} />
             <Field label="Consignor name" value={fields.consignor} onChange={(v) => setFields((f) => ({ ...f, consignor: v }))} />
+            {(fields.consignorSigUrl || fields.consignorStamp) && (
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1 text-xs text-muted">
+                {fields.consignorSigUrl ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={fields.consignorSigUrl} alt="Consignor signature" className="h-6 w-16 shrink-0 object-contain" />
+                    <span className="flex-1">Consignor signature attached</span>
+                  </>
+                ) : (
+                  <span className="flex-1">Consignor auto-signed (digital device attestation)</span>
+                )}
+                <button onClick={clearConsignorSig} className="underline hover:text-fg">clear</button>
+              </div>
+            )}
             <Field label="Driver / carrier / consignee name" value={fields.driver} onChange={(v) => setFields((f) => ({ ...f, driver: v }))} />
             {fields.signatureUrl && (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1 text-xs text-muted">
@@ -396,7 +512,7 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
               <button onClick={() => setDoc(null)} className="flex items-center gap-1 rounded-lg border border-white/30 px-3 py-1.5"><X size={15} /> Close</button>
             </span>
           </div>
-          <BolDocument bol={doc.bol} number={doc.number} date={doc.date} po={doc.po} shipTo={doc.shipTo} truck={doc.truck} trailer={doc.trailer} consignor={doc.consignor} driver={doc.driver} signatureUrl={doc.signatureUrl} includeNeq={doc.includeNeq} receiverDate={doc.receiverDate} consignorSigUrl={doc.consignorSigUrl} consignorDate={doc.consignorDate} />
+          <BolDocument bol={doc.bol} number={doc.number} date={doc.date} po={doc.po} shipTo={doc.shipTo} truck={doc.truck} trailer={doc.trailer} consignor={doc.consignor} driver={doc.driver} signatureUrl={doc.signatureUrl} includeNeq={doc.includeNeq} receiverDate={doc.receiverDate} consignorSigUrl={doc.consignorSigUrl} consignorStamp={doc.consignorStamp} consignorDate={doc.consignorDate} />
         </div>,
         document.body
       )}
@@ -413,8 +529,8 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
   );
 }
 
-function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor, driver, signatureUrl, includeNeq, receiverDate, consignorSigUrl, consignorDate }:
-  { bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string; consignor: string; driver: string; signatureUrl: string; includeNeq: boolean; receiverDate: string; consignorSigUrl: string; consignorDate: string }) {
+function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor, driver, signatureUrl, includeNeq, receiverDate, consignorSigUrl, consignorStamp, consignorDate }:
+  { bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string; consignor: string; driver: string; signatureUrl: string; includeNeq: boolean; receiverDate: string; consignorSigUrl: string; consignorStamp: string; consignorDate: string }) {
   const placard = (c: string) => bol.classes.includes(c);
   return (
     <div className="bol-doc">
@@ -517,6 +633,8 @@ function BolDocument({ bol, number, date, po, shipTo, truck, trailer, consignor,
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img className="sig-img sig-consignor" src={consignorSigUrl} alt="Consignor signature" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                 </div>
+              ) : consignorStamp ? (
+                <div className="u sig"><span className="digi-stamp">{consignorStamp}</span></div>
               ) : <div className="u"></div>}
             </div>
             <div className="l" style={{ maxWidth: "32mm" }}><div className="cap">Date</div><div className="u">{consignorDate}</div></div>

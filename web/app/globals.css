@@ -131,6 +131,12 @@ html, body {
   object-fit: contain; object-position: right bottom; pointer-events: none; }
 .bol-doc .sig-img.sig-consignee { right: 6mm; }   /* tiny nudge left */
 .bol-doc .sig-img.sig-consignor { right: 16mm; }  /* was way too far right */
+/* Digital attestation stamp — printed in the signature line when the consignor is
+   auto-attributed to the operator who was signed into the device (no wet signature). */
+.bol-doc .digi-stamp { position: absolute; bottom: 1px; right: 4mm; max-width: 62%;
+  padding: 1px 5px; border: 1px solid #16794c; border-radius: 3px; color: #16794c;
+  font-size: 7pt; font-style: italic; line-height: 1.2; text-align: right;
+  background: rgba(22,121,76,0.06); }
 .bol-doc .draft-stamp { color: var(--accent); font-weight: 800; }
 
 @media print {

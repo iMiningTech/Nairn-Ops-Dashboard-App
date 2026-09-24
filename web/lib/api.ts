@@ -190,6 +190,7 @@ export type Signature = {
   drive_url: string;
   operator: string;
   item_count: number;
+  role: string;            // "Consignee" | "Consignor" (blank = legacy consignee)
 };
 
 // A line item inside an NDT batch (NDT_Batch_Contents tab).
@@ -473,6 +474,7 @@ function mapSignatureRow(r: Record<string, string>): Signature {
     drive_url: url,
     operator: r["Operator"] ?? "",
     item_count: toNum(r["Item_Count"]),
+    role: (r["Role"] ?? "").trim(),
   };
 }
 
