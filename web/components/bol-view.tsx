@@ -14,7 +14,7 @@ const CONSIGNOR_SIGNER = "Justin James";
 const CONSIGNOR_SIG_URL = "/consignor_sig.png";
 // Shown in place of a drawn signature when the consignor is auto-attributed to the
 // operator who was signed into the device when the sale was processed.
-const AUTO_STAMP = "Signed digitally — operator authenticated on the device at point of sale";
+const AUTO_STAMP = "✓ Digitally signed — operator authenticated via device sign-in";
 
 type DocState = {
   bol: Bol; number: string; date: string; po: string; shipTo: string; truck: string; trailer: string;
@@ -157,9 +157,13 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
         name = CONSIGNOR_SIGNER;
       }
     }
-    // The personal static signature is only ever placed over the signatory's own
-    // name, and only when nothing else already fills the signature line.
-    if (!sigUrl && !stamp && consignorSign && name.toLowerCase() === CONSIGNOR_SIGNER.toLowerCase()) sigUrl = CONSIGNOR_SIG_URL;
+    // Fill the signature line when nothing already does: the plant signatory
+    // (Justin) gets his static signature; any other named consignor with no
+    // captured signature = an operator signed into the device → attestation stamp.
+    if (!sigUrl && !stamp) {
+      if (name.toLowerCase() === CONSIGNOR_SIGNER.toLowerCase()) { if (consignorSign) sigUrl = CONSIGNOR_SIG_URL; }
+      else if (name) stamp = AUTO_STAMP;
+    }
     return { name, sigUrl, stamp, date };
   }
 
@@ -217,17 +221,24 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     let consignor = r.consignor_name || "";
     let consignorSigUrl = "", consignorStamp = "", consignorDate = docDate;
     if (rConsignorSig) {
+      // A consignor signature was captured for this PO → use the drawn signature.
       consignor = consignor || rConsignorSig.receiver_name;
       consignorSigUrl = rConsignorSig.drive_url;
       consignorDate = rConsignorSig.timestamp ? fmtDate(rConsignorSig.timestamp) : docDate;
-    } else if (consignor && rOperator && consignor.trim().toLowerCase() === rOperator.trim().toLowerCase()) {
-      consignorStamp = AUTO_STAMP;   // stored name is the sale operator → auto-attested
-    } else if (!consignor) {
-      if (rOperator) { consignor = rOperator; consignorStamp = AUTO_STAMP; }
-      else if (consignorSign) consignor = CONSIGNOR_SIGNER;
+    } else if (!consignor && rOperator) {
+      consignor = rOperator;   // no stored name → the operator who processed the sale
+    } else if (!consignor && consignorSign) {
+      consignor = CONSIGNOR_SIGNER;
     }
-    if (!consignorSigUrl && !consignorStamp && consignorSign && consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase())
-      consignorSigUrl = CONSIGNOR_SIG_URL;
+    // Fill the signature line: Justin (the plant signatory) → his static signature;
+    // any other named consignor with no captured signature = an operator who was
+    // signed into the device at point of sale → digital attestation stamp. This is
+    // independent of finding a live Signatures row, so old app-issued BOLs (which
+    // predate signature rows) still show the stamp on reprint.
+    if (!consignorSigUrl && !consignorStamp) {
+      if (consignor.trim().toLowerCase() === CONSIGNOR_SIGNER.toLowerCase()) consignorSigUrl = CONSIGNOR_SIG_URL;
+      else if (consignor.trim()) consignorStamp = AUTO_STAMP;
+    }
     setDoc({ bol: bolObj, number: r.bol_no, date: docDate, po, shipTo: r.ship_to, truck: r.truck, trailer: r.trailer,
       consignor, driver: r.driver_name, signatureUrl: r.signature_url, includeNeq: r.include_neq, qrs, issued: true,
       receiverDate, consignorSigUrl, consignorStamp, consignorDate });
