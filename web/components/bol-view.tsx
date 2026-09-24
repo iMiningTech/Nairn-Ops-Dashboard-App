@@ -146,15 +146,15 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     let date = preset.date || fallbackDate;
     if (!name && !sigUrl && !stamp) {
       const cs = consignorSigs[0];
-      if (cs) {                             // 1. a captured consignor signature for the PO
+      if (cs) {
         name = cs.receiver_name || "";
         sigUrl = cs.drive_url || "";
         date = cs.timestamp ? fmtDate(cs.timestamp) : fallbackDate;
-      } else if (consignorSign) {           // 2. "sign as consignor" selected → use my name
-        name = CONSIGNOR_SIGNER;
-      } else if (saleOperator) {            // 3. otherwise the signed-in operator → digital
+      } else if (saleOperator) {
         name = saleOperator;
         stamp = AUTO_STAMP;
+      } else if (consignorSign) {
+        name = CONSIGNOR_SIGNER;
       }
     }
     // Fill the signature line when nothing already does: the plant signatory
@@ -225,10 +225,10 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
       consignor = consignor || rConsignorSig.receiver_name;
       consignorSigUrl = rConsignorSig.drive_url;
       consignorDate = rConsignorSig.timestamp ? fmtDate(rConsignorSig.timestamp) : docDate;
-    } else if (!consignor && consignorSign) {
-      consignor = CONSIGNOR_SIGNER;   // "sign as consignor" selected → use my name
     } else if (!consignor && rOperator) {
-      consignor = rOperator;          // otherwise the operator who processed the sale
+      consignor = rOperator;   // no stored name → the operator who processed the sale
+    } else if (!consignor && consignorSign) {
+      consignor = CONSIGNOR_SIGNER;
     }
     // Fill the signature line: Justin (the plant signatory) → his static signature;
     // any other named consignor with no captured signature = an operator who was
