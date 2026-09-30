@@ -19,7 +19,7 @@ import {
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
   lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
-  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, PROD_FAMILIES, prodDateKey,
+  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, PROD_FAMILIES,
   type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox, type FinResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
@@ -1191,11 +1191,11 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
       if (selStatuses && !selStatuses.has(i.status)) return false;
       if (selLoc && i.current_location !== selLoc) return false;
       if (q && !(i.qr.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))) return false;
-      // Production-date range: for finished goods this is the day printed/produced
-      // (First_Seen_At, falling back to ProdDate). Items with no such date are
-      // excluded whenever a bound is set, since they can't be placed in the window.
+      // Date of manufacture (ProdDate_Formatted) — NOT First_Seen_At, which is only
+      // when the label was scanned into this system. ProdDate is present on pre-system
+      // labels too. Items with no ProdDate are excluded whenever a bound is set.
       if (dateFrom || dateTo) {
-        const k = prodDateKey(i);
+        const k = i.prod_date ? dateKey(i.prod_date) : "";
         if (!k) return false;
         if (dateFrom && k < dateFrom) return false;
         if (dateTo && k > dateTo) return false;
@@ -1214,7 +1214,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
     { key: "delay_display", label: "Delay" }, { key: "length", label: "Length" },
     { key: "current_quantity", label: "Qty", num: true, fmt: fmtQty },
     { key: "current_location", label: "Location" }, { key: "status", label: "Status" },
-    { key: "first_seen_at", label: "Produced", fmt: (_v, r) => fmtDate((r.first_seen_at as string) || (r.prod_date as string) || "") },
+    { key: "prod_date", label: "Mfg date", fmt: (v) => fmtDate((v as string) || "") },
     { key: "last_updated_at", label: "Updated", fmt: fmtTs }, { key: "last_updated_by", label: "By" },
   ];
 
@@ -1232,7 +1232,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
           </select>
         </div>
         <div>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted" title="Finished goods: the day printed/produced (First_Seen_At). Boxes with no production date are hidden while a date is set.">Produced between</div>
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted" title="Filters on date of manufacture (ProdDate_Formatted), including pre-system labels. Boxes with no manufacture date are hidden while a date is set.">Manufactured between</div>
           <div className="flex items-center gap-1.5">
             <input type="date" value={dateFrom} max={dateTo || todayKey()} onChange={(e) => setDateFrom(e.target.value)}
               className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent" />
@@ -1268,9 +1268,9 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
         <CardBody>
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-semibold text-fg">Inventory records ({fmtNum(df.length)})
-              {(dateFrom || dateTo) && <span className="ml-1 font-normal text-muted">· produced {dateFrom ? fmtDate(dateFrom) : "start"}–{dateTo ? fmtDate(dateTo) : "today"}</span>}
+              {(dateFrom || dateTo) && <span className="ml-1 font-normal text-muted">· manufactured {dateFrom ? fmtDate(dateFrom) : "start"}–{dateTo ? fmtDate(dateTo) : "today"}</span>}
             </div>
-            <button onClick={() => csvDownload(`stock_${today()}.csv`, cols, df.map((i) => ({ ...i, first_seen_at: fmtDate(i.first_seen_at || i.prod_date || ""), last_updated_at: fmtTime(i.last_updated_at) })))}
+            <button onClick={() => csvDownload(`stock_${today()}.csv`, cols, df.map((i) => ({ ...i, prod_date: fmtDate(i.prod_date || ""), last_updated_at: fmtTime(i.last_updated_at) })))}
               className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
           </div>
           <Grid cols={cols} rows={df as unknown as Record<string, unknown>[]} />
