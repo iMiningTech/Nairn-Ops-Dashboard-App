@@ -19,7 +19,7 @@ import {
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
   lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
-  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, PROD_FAMILIES,
+  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, PROD_FAMILIES, prodDateKey,
   type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox, type FinResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
@@ -1177,6 +1177,8 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
   const [selStatuses, setSelStatuses] = useState<Set<string> | null>(() => new Set(["Active"]));
   const [selLoc, setSelLoc] = useState("");
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   const types = useMemo(() => uniqueSorted(items.map((i) => i.type)), [items]);
   const statuses = useMemo(() => uniqueSorted(items.map((i) => i.status)), [items]);
@@ -1184,13 +1186,23 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
 
   const df = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return items.filter((i) =>
-      (!selTypes || selTypes.has(i.type)) &&
-      (!selStatuses || selStatuses.has(i.status)) &&
-      (!selLoc || i.current_location === selLoc) &&
-      (!q || i.qr.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))
-    );
-  }, [items, selTypes, selStatuses, selLoc, search]);
+    return items.filter((i) => {
+      if (selTypes && !selTypes.has(i.type)) return false;
+      if (selStatuses && !selStatuses.has(i.status)) return false;
+      if (selLoc && i.current_location !== selLoc) return false;
+      if (q && !(i.qr.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))) return false;
+      // Production-date range: for finished goods this is the day printed/produced
+      // (First_Seen_At, falling back to ProdDate). Items with no such date are
+      // excluded whenever a bound is set, since they can't be placed in the window.
+      if (dateFrom || dateTo) {
+        const k = prodDateKey(i);
+        if (!k) return false;
+        if (dateFrom && k < dateFrom) return false;
+        if (dateTo && k > dateTo) return false;
+      }
+      return true;
+    });
+  }, [items, selTypes, selStatuses, selLoc, search, dateFrom, dateTo]);
 
   const totalQty = df.reduce((s, i) => s + i.current_quantity, 0);
   const byType = groupSum(df, (i) => i.type, (i) => i.current_quantity).filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
@@ -1202,6 +1214,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
     { key: "delay_display", label: "Delay" }, { key: "length", label: "Length" },
     { key: "current_quantity", label: "Qty", num: true, fmt: fmtQty },
     { key: "current_location", label: "Location" }, { key: "status", label: "Status" },
+    { key: "first_seen_at", label: "Produced", fmt: (_v, r) => fmtDate((r.first_seen_at as string) || (r.prod_date as string) || "") },
     { key: "last_updated_at", label: "Updated", fmt: fmtTs }, { key: "last_updated_by", label: "By" },
   ];
 
@@ -1217,6 +1230,17 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
             <option value="">All locations</option>
             {locations.map((l) => <option key={l} value={l}>{l}</option>)}
           </select>
+        </div>
+        <div>
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted" title="Finished goods: the day printed/produced (First_Seen_At). Boxes with no production date are hidden while a date is set.">Produced between</div>
+          <div className="flex items-center gap-1.5">
+            <input type="date" value={dateFrom} max={dateTo || todayKey()} onChange={(e) => setDateFrom(e.target.value)}
+              className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent" />
+            <span className="text-xs text-muted">to</span>
+            <input type="date" value={dateTo} min={dateFrom || undefined} max={todayKey()} onChange={(e) => setDateTo(e.target.value)}
+              className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent" />
+            {(dateFrom || dateTo) && <button onClick={() => { setDateFrom(""); setDateTo(""); }} className="text-xs text-muted underline hover:text-fg">clear</button>}
+          </div>
         </div>
         <div className="ml-auto">
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Search</div>
@@ -1243,8 +1267,10 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
       <Card>
         <CardBody>
           <div className="mb-3 flex items-center justify-between">
-            <div className="text-sm font-semibold text-fg">Inventory records ({fmtNum(df.length)})</div>
-            <button onClick={() => csvDownload(`stock_${today()}.csv`, cols, df.map((i) => ({ ...i, last_updated_at: fmtTime(i.last_updated_at) })))}
+            <div className="text-sm font-semibold text-fg">Inventory records ({fmtNum(df.length)})
+              {(dateFrom || dateTo) && <span className="ml-1 font-normal text-muted">· produced {dateFrom ? fmtDate(dateFrom) : "start"}–{dateTo ? fmtDate(dateTo) : "today"}</span>}
+            </div>
+            <button onClick={() => csvDownload(`stock_${today()}.csv`, cols, df.map((i) => ({ ...i, first_seen_at: fmtDate(i.first_seen_at || i.prod_date || ""), last_updated_at: fmtTime(i.last_updated_at) })))}
               className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
           </div>
           <Grid cols={cols} rows={df as unknown as Record<string, unknown>[]} />
