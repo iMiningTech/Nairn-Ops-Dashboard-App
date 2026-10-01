@@ -1176,6 +1176,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
   const [selTypes, setSelTypes] = useState<Set<string> | null>(null);
   const [selStatuses, setSelStatuses] = useState<Set<string> | null>(() => new Set(["Active"]));
   const [selLoc, setSelLoc] = useState("");
+  const [selQc, setSelQc] = useState("");
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -1183,6 +1184,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
   const types = useMemo(() => uniqueSorted(items.map((i) => i.type)), [items]);
   const statuses = useMemo(() => uniqueSorted(items.map((i) => i.status)), [items]);
   const locations = useMemo(() => uniqueSorted(items.map((i) => i.current_location)), [items]);
+  const qcPersons = useMemo(() => uniqueSorted(items.map((i) => i.qc_person).filter(Boolean)), [items]);
 
   const df = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1190,6 +1192,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
       if (selTypes && !selTypes.has(i.type)) return false;
       if (selStatuses && !selStatuses.has(i.status)) return false;
       if (selLoc && i.current_location !== selLoc) return false;
+      if (selQc && i.qc_person !== selQc) return false;
       if (q && !(i.qr.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))) return false;
       // Date of manufacture (ProdDate_Formatted) — NOT First_Seen_At, which is only
       // when the label was scanned into this system. ProdDate is present on pre-system
@@ -1202,7 +1205,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
       }
       return true;
     });
-  }, [items, selTypes, selStatuses, selLoc, search, dateFrom, dateTo]);
+  }, [items, selTypes, selStatuses, selLoc, selQc, search, dateFrom, dateTo]);
 
   const totalQty = df.reduce((s, i) => s + i.current_quantity, 0);
   const byType = groupSum(df, (i) => i.type, (i) => i.current_quantity).filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
@@ -1214,6 +1217,7 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
     { key: "delay_display", label: "Delay" }, { key: "length", label: "Length" },
     { key: "current_quantity", label: "Qty", num: true, fmt: fmtQty },
     { key: "current_location", label: "Location" }, { key: "status", label: "Status" },
+    { key: "qc_person", label: "QC" },
     { key: "prod_date", label: "Mfg date", fmt: (v) => fmtDate((v as string) || "") },
     { key: "last_updated_at", label: "Updated", fmt: fmtTs }, { key: "last_updated_by", label: "By" },
   ];
@@ -1229,6 +1233,14 @@ function StockView({ items, tv }: { items: InventoryItem[]; tv: boolean }) {
             className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent">
             <option value="">All locations</option>
             {locations.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+        <div>
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted" title="QC_Person — who signed off QC on the box.">QC person</div>
+          <select value={selQc} onChange={(e) => setSelQc(e.target.value)}
+            className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent">
+            <option value="">All QC people</option>
+            {qcPersons.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
         <div>
