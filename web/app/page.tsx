@@ -16,7 +16,7 @@ import {
   maintenancePools, inRange,
   type DateRange,
 } from "@/lib/pools";
-import { explosivesBalance, type ClassBalance, type ComponentBalance } from "@/lib/explosivesBalance";
+import { explosivesBalance, componentDailyLedger, type ClassBalance, type ComponentBalance, type BalanceClass, type DayLedger } from "@/lib/explosivesBalance";
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
   lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
@@ -2046,6 +2046,20 @@ function ReconView({ items, txns, contents, range, rangeLabel }:
     corrections: bal.classes.reduce((s, c) => s + c.corrections, 0),
   };
 
+  // Daily drill-down: pick a component (or click a row) → day-by-day pool ledger
+  // + NDT batch codes, for tracing where a month-end discrepancy enters.
+  const variants = useMemo(() => bal.classes.flatMap((c) => c.rows.map((r) => ({ cls: r.cls, key: r.variantKey, label: r.variant, unit: r.unit }))), [bal]);
+  const [selKey, setSelKey] = useState("");
+  useEffect(() => {
+    if (selKey && variants.some((v) => `${v.cls}|||${v.key}` === selKey)) return;
+    const all = bal.classes.flatMap((c) => c.rows);
+    const first = all.find((r) => r.flags.length) || all[0];
+    setSelKey(first ? `${first.cls}|||${first.variantKey}` : "");
+  }, [variants]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sel = variants.find((v) => `${v.cls}|||${v.key}` === selKey) || null;
+  const ledger = useMemo(() => sel ? componentDailyLedger(items, txns, contents, sel.cls as BalanceClass, sel.key, range) : [], [sel, items, txns, contents, range]);
+  const pick = (r: ComponentBalance) => setSelKey(`${r.cls}|||${r.variantKey}`);
+
   return (
     <>
       <div className="text-sm text-muted">Explosives balance for <b className="text-fg">{rangeLabel}</b> — each component reconciled through the flow: issued to production → consumed into finished goods or destroyed (NDT). Figures per the transaction log + NDT batch contents.</div>
@@ -2067,7 +2081,26 @@ function ReconView({ items, txns, contents, range, rangeLabel }:
         <Stat label="Manual corrections" value={signed(t.corrections)} status={t.corrections ? "warn" : "ok"} sub="reconcile / correction" />
       </div>
 
-      {bal.classes.map((c) => <BalanceClassCard key={c.cls} c={c} />)}
+      {bal.classes.map((c) => <BalanceClassCard key={c.cls} c={c} selKey={selKey} onPick={pick} />)}
+
+      {/* Daily drill-down ledger */}
+      <Card className="border-t-4 border-t-accent"><CardBody>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold text-fg">Day-by-day ledger</div>
+          <select value={selKey} onChange={(e) => setSelKey(e.target.value)}
+            className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent">
+            {bal.classes.map((c) => (
+              <optgroup key={c.cls} label={c.cls}>
+                {c.rows.map((r) => <option key={r.variantKey} value={`${r.cls}|||${r.variantKey}`}>{r.variant}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <div className="mb-3 text-xs text-muted">Every pool movement for the selected component by day, with the NDT batch codes that destroyed it — <b className="text-fg">→ Fin. goods</b> is production that day. Tip: click any component row above to load it here.</div>
+        {!sel ? <div className="py-6 text-center text-sm text-muted">Pick a component.</div>
+          : ledger.length === 0 ? <div className="py-6 text-center text-sm text-muted">No movements for {sel.label} in {rangeLabel}.</div>
+          : <DailyLedgerTable rows={ledger} unit={sel.unit} />}
+      </CardBody></Card>
 
       <Card><CardBody className="text-xs leading-relaxed text-muted">
         <b className="text-fg">How to read this.</b> For each component: <b>Opening</b> + <b>In</b> − <b>→ Finished goods</b> − <b>Destroyed</b> ± <b>Corrections</b> − <b>Out</b> = <b>Closing</b> — the ledger always ties Opening→Closing (it is the transaction log).
@@ -2081,7 +2114,7 @@ function ReconView({ items, txns, contents, range, rangeLabel }:
 
 const bnum = (v: number, zero = "—") => (Math.abs(v) < 0.5 ? zero : fmtNum(Math.round(v)));
 
-function BalanceClassCard({ c }: { c: ClassBalance }) {
+function BalanceClassCard({ c, selKey, onPick }: { c: ClassBalance; selKey: string; onPick: (r: ComponentBalance) => void }) {
   return (
     <Card className={c.flagged ? "border-t-4 border-t-danger" : ""}><CardBody>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -2107,7 +2140,7 @@ function BalanceClassCard({ c }: { c: ClassBalance }) {
             </tr>
           </thead>
           <tbody>
-            {c.rows.map((r) => <BalanceRow key={r.variant} r={r} />)}
+            {c.rows.map((r) => <BalanceRow key={r.variant} r={r} selected={`${r.cls}|||${r.variantKey}` === selKey} onPick={onPick} />)}
             <tr className="border-t-2 border-border font-semibold text-fg">
               <td className="py-1.5 pr-2">Class total</td>
               <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.opening, "0")}</td>
@@ -2126,10 +2159,11 @@ function BalanceClassCard({ c }: { c: ClassBalance }) {
   );
 }
 
-function BalanceRow({ r }: { r: ComponentBalance }) {
+function BalanceRow({ r, selected, onPick }: { r: ComponentBalance; selected: boolean; onPick: (r: ComponentBalance) => void }) {
   const flagged = r.flags.length > 0;
   return (
-    <tr className={`border-b border-border/60 ${flagged ? "bg-danger/5" : ""}`}>
+    <tr onClick={() => onPick(r)} title="Show day-by-day ledger"
+      className={`cursor-pointer border-b border-border/60 hover:bg-bg ${selected ? "bg-accent/10" : flagged ? "bg-danger/5" : ""}`}>
       <td className="py-1.5 pr-2">{r.variant}{r.pools > 1 ? <span className="text-muted"> · {r.pools} pools</span> : ""}</td>
       <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.opening)}</td>
       <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.issued)}</td>
@@ -2142,6 +2176,66 @@ function BalanceRow({ r }: { r: ComponentBalance }) {
         {flagged && <span className="inline-flex flex-wrap gap-1">{r.flags.map((f) => <Badge key={f} tone="danger">{f}</Badge>)}</span>}
       </td>
     </tr>
+  );
+}
+
+function DailyLedgerTable({ rows, unit }: { rows: DayLedger[]; unit: string }) {
+  const sum = (f: (r: DayLedger) => number) => rows.reduce((s, r) => s + f(r), 0);
+  const u = unit === "m" ? " m" : "";
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[52rem] text-sm">
+        <thead className="text-left text-xs uppercase tracking-wide text-muted">
+          <tr className="border-b border-border">
+            <th className="py-1.5 pr-2 font-medium">Day</th>
+            <th className="px-2 py-1.5 text-right font-medium">In</th>
+            <th className="px-2 py-1.5 text-right font-medium">→ Fin. goods</th>
+            <th className="px-2 py-1.5 text-right font-medium">Waste</th>
+            <th className="px-2 py-1.5 text-right font-medium">Out</th>
+            <th className="px-2 py-1.5 text-right font-medium">Corrections</th>
+            <th className="px-2 py-1.5 text-right font-medium">Net Δ</th>
+            <th className="px-2 py-1.5 text-right font-medium">NDT</th>
+            <th className="px-2 py-1.5 font-medium">NDT batches (qty · type)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.day} className={`border-b border-border/60 ${r.corrections ? "bg-warn/5" : ""}`}>
+              <td className="py-1.5 pr-2 font-medium text-fg">{shortDay(r.day)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.inQty)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.consumedFg)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.destroyedPool)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.otherOut)}</td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${r.corrections ? "font-semibold text-warn" : ""}`}>{r.corrections ? signed(Math.round(r.corrections)) : "—"}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-fg">{r.net ? signed(Math.round(r.net)) : "0"}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{r.ndt ? fmtNum(Math.round(r.ndt)) : "—"}</td>
+              <td className="px-2 py-1.5 text-xs text-muted">
+                {r.ndtEntries.length === 0 ? "—" : (
+                  <span className="inline-flex flex-wrap gap-1">
+                    {r.ndtEntries.map((e, i) => (
+                      <span key={i} className="rounded border border-border px-1.5 py-0.5 font-mono" title={`${e.entry}${e.line ? ` · ${e.line}` : ""}`}>
+                        {e.batch || "?"} <span className="text-fg">({fmtNum(Math.round(e.qty))}·{(e.entry || "").slice(0, 4)})</span>
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+          <tr className="border-t-2 border-border font-semibold text-fg">
+            <td className="py-1.5 pr-2">Total{u}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.inQty), "0")}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.consumedFg), "0")}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.destroyedPool), "0")}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.otherOut), "0")}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{(() => { const v = sum((r) => r.corrections); return v ? signed(Math.round(v)) : "—"; })()}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{(() => { const v = sum((r) => r.net); return v ? signed(Math.round(v)) : "0"; })()}</td>
+            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.ndt), "0")}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   );
 }
 

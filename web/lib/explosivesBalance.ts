@@ -47,6 +47,7 @@ const DESTROY_REASONS = new Set(["Waste", "Testing"]);
 export type ComponentBalance = {
   cls: BalanceClass;
   variant: string;          // friendly description (first-seen casing)
+  variantKey: string;       // normalised description, for the daily-ledger lookup
   unit: string;             // "m" for shock tube, else "u"
   pools: number;            // how many pool QRs rolled up
   opening: number;
@@ -171,7 +172,7 @@ export function explosivesBalance(
     if (periodIncludesToday && Math.abs(closing - a.actual) > 0.5)
       flags.push("ledger ≠ live stock");
     rows.push({
-      cls: a.cls, variant: a.variant, unit: a.unit, pools: a.qrs.size,
+      cls: a.cls, variant: a.variant, variantKey: normDesc(a.variant), unit: a.unit, pools: a.qrs.size,
       opening: a.opening, issued: a.issued, consumedFg: a.consumedFg, destroyedPool: a.destroyedPool,
       destroyedNdt, corrections: a.corrections, otherOut: a.otherOut, closing,
       actualOnHand: periodIncludesToday ? a.actual : null, flags,
@@ -196,4 +197,62 @@ export function explosivesBalance(
     flaggedCount: rows.filter((r) => r.flags.length).length,
     totalVariants: rows.length,
   };
+}
+
+// ── Per-component day-by-day ledger (drill-down) ─────────────────────────────
+// Every pool movement for one component, grouped by day, with the NDT batch
+// entries that destroyed it that day — for tracing where a month-end discrepancy
+// enters (e.g. a lone manual correction on one delay, or NDT not booked to stock).
+export type NdtDayEntry = { batch: string; qty: number; entry: string; line: string };
+export type DayLedger = {
+  day: string;
+  inQty: number;           // gross pool inflow (incl. internal transfers)
+  consumedFg: number;      // backflush into finished goods that day
+  destroyedPool: number;   // pool waste/testing decrements
+  otherOut: number;        // other non-FG outflow
+  corrections: number;     // manual reconcile/correction (signed)
+  net: number;             // net pool change that day (all movements)
+  ndt: number;             // units destroyed in NDT batches that day (independent)
+  ndtEntries: NdtDayEntry[];
+};
+
+export function componentDailyLedger(
+  items: InventoryItem[], txns: Transaction[], contents: BatchContent[],
+  cls: BalanceClass, variantKey: string, range: DateRange,
+): DayLedger[] {
+  const qrs = new Set(
+    items.filter((i) => isExplosivePool(i) && classifyComponent(i.description) === cls && normDesc(i.description) === variantKey)
+      .map((i) => i.qr));
+  const byDay = new Map<string, DayLedger>();
+  const get = (d: string) => {
+    let r = byDay.get(d);
+    if (!r) { r = { day: d, inQty: 0, consumedFg: 0, destroyedPool: 0, otherOut: 0, corrections: 0, net: 0, ndt: 0, ndtEntries: [] }; byDay.set(d, r); }
+    return r;
+  };
+
+  for (const t of txns) {
+    if (t.field !== "Current_Quantity" || !qrs.has(t.qr)) continue;
+    const k = dateKey(t.timestamp);
+    if (!k || k < range.from || k > range.to) continue;
+    const d = num(t.new_value) - num(t.old_value);
+    if (!d) continue;
+    const r = get(k);
+    r.net += d;
+    if (t.type === "POOL_BOM_DECREMENT") r.consumedFg += -d;
+    else if (CORRECTION_REASONS.has(t.reason)) r.corrections += d;
+    else if (DESTROY_REASONS.has(t.reason)) r.destroyedPool += -d;
+    else if (d > 0) r.inQty += d;
+    else r.otherOut += -d;
+  }
+
+  for (const c of contents) {
+    if (classifyComponent(c.item) !== cls || normDesc(c.item) !== variantKey) continue;
+    const k = dateKey(c.timestamp);
+    if (!k || k < range.from || k > range.to) continue;
+    const r = get(k);
+    r.ndt += c.quantity;
+    r.ndtEntries.push({ batch: c.batch_qr, qty: c.quantity, entry: c.entry_type || "—", line: c.line });
+  }
+
+  return Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day));
 }
