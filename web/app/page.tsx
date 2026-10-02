@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, driveThumbUrl, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
+import { api, driveThumbUrl, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Signature, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -802,12 +802,20 @@ function MonthlyExportView({ items, txns, users, targets, qc, decon, contents, t
   { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; qc: QcCheck[]; decon: Decon[]; contents: BatchContent[]; tickets: Ticket[]; events: TicketEvent[]; eos: ShiftReport[]; defaultMonth: string; generatedAt: string | null }) {
   const [month, setMonth] = useState(defaultMonth);
   const [copied, setCopied] = useState(false);
+  // BOL register + signatures are loaded here (not globally) for the Shipping
+  // section. Tolerate their absence so the rest of the report still builds.
+  const [bols, setBols] = useState<IssuedBol[]>([]);
+  const [sigs, setSigs] = useState<Signature[]>([]);
+  useEffect(() => {
+    api.bols().then((r) => setBols(r.items)).catch(() => {});
+    api.signatures().then((r) => setSigs(r.items)).catch(() => {});
+  }, []);
   const maxMonth = todayKey().slice(0, 7);
 
   const md = useMemo(() => buildMonthlyReport({
-    items, txns, users, targets, qc, decon, contents, tickets, events, eos,
+    items, txns, users, targets, qc, decon, contents, tickets, events, eos, bols, signatures: sigs,
     month, todayKey: todayKey(), generatedAt, shiftStartHour: SHIFT_START_HOUR,
-  }), [items, txns, users, targets, qc, decon, contents, tickets, events, eos, month, generatedAt]);
+  }), [items, txns, users, targets, qc, decon, contents, tickets, events, eos, bols, sigs, month, generatedAt]);
 
   const monthLabel = (() => { const [y, mm] = month.split("-").map(Number); return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }); })();
 
@@ -830,7 +838,7 @@ function MonthlyExportView({ items, txns, users, targets, qc, decon, contents, t
           <div>
             <div className="text-base font-semibold text-fg">Monthly report export — {monthLabel}</div>
             <div className="mt-1 max-w-2xl text-sm text-muted">
-              Pulls every tab (production, operators, breakdowns &amp; QC, decontamination, destruction, sales, live inventory)
+              Pulls every tab (production, operators, breakdowns &amp; QC, decontamination, destruction, sales, shipping/BOLs, live inventory)
               into one Markdown document. <span className="font-medium text-fg">Copy</span> it and paste into Claude
               Desktop as the input for your monthly report, or <span className="font-medium text-fg">Download</span> the
               <code className="mx-1 rounded bg-bg px-1 py-0.5 text-xs">.md</code> file.

@@ -10,7 +10,7 @@
 // today for the in-progress month). Inventory sections are a live "as of now"
 // snapshot and are labelled as such.
 
-import type { InventoryItem, Transaction, User, DailyTarget, QcCheck, Decon, BatchContent, Ticket, TicketEvent, ShiftReport } from "@/lib/api";
+import type { InventoryItem, Transaction, User, DailyTarget, QcCheck, Decon, BatchContent, Ticket, TicketEvent, ShiftReport, IssuedBol, Signature } from "@/lib/api";
 import { fmtNum, fmtMins, fmtClock, shortDay, fmtDate, fmtTime, dateKey } from "@/lib/utils";
 import {
   monthTotals, productionByDay, productionVariants, startDeadtimeByDay,
@@ -35,6 +35,8 @@ export type ReportInput = {
   tickets: Ticket[];
   events: TicketEvent[];
   eos: ShiftReport[];
+  bols: IssuedBol[];
+  signatures: Signature[];
   month: string;               // "YYYY-MM"
   todayKey: string;            // site-local today, YYYY-MM-DD
   generatedAt?: string | null; // data freshness
@@ -73,7 +75,7 @@ function monthMeta(month: string, todayKey: string) {
 }
 
 export function buildMonthlyReport(inp: ReportInput): string {
-  const { items, txns, users, targets, qc, decon, contents, tickets, events, eos, month, todayKey } = inp;
+  const { items, txns, users, targets, qc, decon, contents, tickets, events, eos, bols, signatures, month, todayKey } = inp;
   const shiftStart = inp.shiftStartHour ?? 6;
   const { label, from, to, range } = monthMeta(month, todayKey);
   const out: string[] = [];
@@ -256,8 +258,43 @@ export function buildMonthlyReport(inp: ReportInput): string {
     ["l", "l", "l", "l", "r", "l", "l"]));
   P();
 
-  // ── 7. Current inventory snapshot (live) ────────────────────────────────────
-  P(`## 7. Current inventory snapshot`);
+  // ── 7. Shipping (Bills of Lading) ───────────────────────────────────────────
+  P(`## 7. Shipping — Bills of Lading`);
+  // Effective BOL date = the COLLECTION date (receiver's signature), falling back
+  // to the stored register Date, then the creation timestamp — mirroring what the
+  // BOL prints. Month membership uses that effective date.
+  const sigByUrl = new Map(signatures.filter((s) => s.drive_url).map((s) => [s.drive_url, s]));
+  const bolPoByQr = new Map<string, string>();
+  for (const t of txns) if (t.field === "PO_Number" && t.new_value) bolPoByQr.set(t.qr, t.new_value);
+  const bolItemByQr = new Map(items.map((i) => [i.qr, i]));
+  const bolPoFor = (qr: string) => bolItemByQr.get(qr)?.po_number || bolPoByQr.get(qr) || "";
+  const bolEffDate = (b: IssuedBol) => {
+    const s = b.signature_url ? sigByUrl.get(b.signature_url) : undefined;
+    return s?.timestamp ? fmtDate(s.timestamp) : (b.date || (b.created_at ? fmtDate(b.created_at) : ""));
+  };
+  const bolEffKey = (b: IssuedBol) => {
+    const s = b.signature_url ? sigByUrl.get(b.signature_url) : undefined;
+    return dateKey(s?.timestamp || b.date || b.created_at || "");
+  };
+  const bolPos = (b: IssuedBol) => Array.from(new Set(
+    b.box_qrs.split(",").map((s) => s.trim()).filter(Boolean).map(bolPoFor).filter(Boolean))).join(", ");
+  const bolsMonth = bols
+    .filter((b) => { const k = bolEffKey(b); return !!k && k >= from && k <= to; })
+    .sort((a, b) => a.bol_no.localeCompare(b.bol_no));
+  const shipPkgs = bolsMonth.reduce((s, b) => s + b.total_packages, 0);
+  const shipUnits = bolsMonth.reduce((s, b) => s + b.total_quantity, 0);
+  const shipNeq = bolsMonth.reduce((s, b) => s + b.total_neq_kg, 0);
+  const shipCustomers = Array.from(new Set(bolsMonth.map((b) => b.ship_to).filter(Boolean)));
+  P(`${nf(bolsMonth.length)} BOL(s) issued · ${nf(shipPkgs)} packages · ${nf(shipUnits)} units · ${shipNeq.toFixed(2)} kg NEQ. Consignees: ${shipCustomers.join(", ") || "—"}.`);
+  P(`_Dated by collection (receiver signature), consistent with the printed document._`);
+  P(mdTable(["BOL No.", "Collected", "Consignee", "PO", "Driver", "Pkgs", "Units", "NEQ (kg)", "Classes"],
+    bolsMonth.map((b) => [b.bol_no, bolEffDate(b), b.ship_to || "—", bolPos(b) || "—", b.driver_name || "—",
+      nf(b.total_packages), nf(b.total_quantity), b.total_neq_kg.toFixed(2), b.classes || "—"]),
+    ["l", "l", "l", "l", "l", "r", "r", "r", "l"]));
+  P();
+
+  // ── 8. Current inventory snapshot (live) ────────────────────────────────────
+  P(`## 8. Current inventory snapshot`);
   P(`_Live "as of now" figures — not bound to the reporting period._`);
 
   const fg = inventoryMatrix(items, true, SITE_ROOMS);
@@ -295,8 +332,8 @@ export function buildMonthlyReport(inp: ReportInput): string {
   }
   P();
 
-  // ── 8. End-of-shift reporting ───────────────────────────────────────────────
-  P(`## 8. End-of-shift reporting`);
+  // ── 9. End-of-shift reporting ───────────────────────────────────────────────
+  P(`## 9. End-of-shift reporting`);
   P(`${nf(eosSum.count)} shift report(s) · ${nf(eosSum.clean)} clean · ${nf(eosSum.flagged)} flagged. ViperDet started on time ${nf(eosSum.viperOnTime)}/${nf(eosSum.count)}. Dead-time days ${nf(eosSum.deadTimeDays)} · QC-issue days ${nf(eosSum.qcDays)} · materials-short days ${nf(eosSum.materialsDays)} · staff-short days ${nf(eosSum.staffMissingDays)}.`);
   P(mdTable(["Date", "ViperDet", "Axxis", "Dead time", "Staff", "QC", "Materials", "Flags", "By"],
     eosMonth.map((r) => [
