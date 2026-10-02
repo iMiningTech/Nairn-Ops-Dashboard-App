@@ -1,7 +1,7 @@
 // Production + daily-ops logic for the Overview, derived from Inventory_Master
 // (printed labels) + Transaction_Log (magazine moves). Verified against the
 // reference sheet dashboard:
-//   • a finished-good item's First_Seen_At = the day it was printed/produced
+//   • a finished-good item's ProdDate_Formatted = the actual day it was made
 //   • Original_Quantity = the quantity on that label
 //   • today's printed stickers grouped by product/delay/length reproduce the
 //     sheet's "Production Printed Stickers (Today)" panel exactly.
@@ -12,7 +12,12 @@ import { dateKey, todayKey, clockMinutes } from "@/lib/utils";
 // A real finished good. "Print Error" labels are misprints, never actual stock,
 // so they're excluded from all production counts, charts and totals.
 export const isFinishedGood = (i: InventoryItem) => i.type === "FINISHED_GOOD" && i.status !== "Print Error";
-export const prodDateKey = (i: InventoryItem) => dateKey(i.first_seen_at || i.prod_date);
+// Production date = the ACTUAL manufacture date (ProdDate_Formatted), NOT
+// First_Seen_At. First_Seen_At is just when the label was first scanned into this
+// system, so reprinting a damaged old sticker bumps it to today and would skew
+// that day's/month's production. ProdDate is stable across reprints; fall back to
+// First_Seen_At only when a box has no ProdDate.
+export const prodDateKey = (i: InventoryItem) => dateKey(i.prod_date || i.first_seen_at);
 
 // Production line for a finished good (drives the ViperDet / Axxis split).
 export function productionLine(i: InventoryItem): "ViperDet" | "Axxis" | null {
