@@ -278,6 +278,11 @@ export function lastT1Destruction(txns: Transaction[]): T1Destruction {
 // Active stock only.
 export const SITE_ROOMS = ["Magazine M1", "Magazine M2", "Nairn Mags", "Sea Can 6", "Sea Can 7", "Component Room", "Warehouse Room 17", "E-board Room", "DAB-16A", "NDT Room"] as const;
 
+// Raw materials / components also live on the Production Floor and in Sea Can 5
+// (inserted before Sea Can 6). Used for the Raw Materials matrix on the dashboard
+// and in the monthly export so Production-Floor stock isn't dropped.
+export const RAW_MATERIAL_ROOMS: readonly string[] = [...SITE_ROOMS.flatMap((r) => (r === "Sea Can 6" ? ["Sea Can 5", r] : [r])), "Production Floor"];
+
 export type MatrixRow = { description: string; cells: Record<string, number>; total: number; family: string | null };
 // Display/sort order for finished-good product families.
 const FAMILY_ORDER = ["MS DUAL", "QS", "SILVER", "TITANIUM"];

@@ -20,7 +20,7 @@ import { explosivesBalance, type ClassBalance, type ComponentBalance } from "@/l
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
   lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
-  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, PROD_FAMILIES,
+  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, RAW_MATERIAL_ROOMS, PROD_FAMILIES,
   type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox, type FinResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
@@ -1320,7 +1320,8 @@ function MatrixHeader({ data, onExport }: { data: MatrixResult; onExport: () => 
 // ── Raw Materials: non-finished-goods pivot (description × room) ─────────────
 // Raw Materials shows the standard site rooms plus Sea Can 5 and the Production
 // Floor (component/detonator pools) — those extras are scoped to this tab only.
-const RAW_MATERIAL_ROOMS = [...SITE_ROOMS.flatMap((r) => (r === "Sea Can 6" ? ["Sea Can 5", r] : [r])), "Production Floor"];
+// RAW_MATERIAL_ROOMS is defined in lib/production.ts (imported) so the dashboard
+// and the monthly export show the same locations (incl. Production Floor).
 function RawMaterialsView({ items }: { items: InventoryItem[] }) {
   const data = useMemo(() => inventoryMatrix(items, false, RAW_MATERIAL_ROOMS), [items]);
   return (
