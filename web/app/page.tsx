@@ -13,9 +13,10 @@ import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
 import {
-  maintenancePools, reconcilePools, reconcileRooms, inRange,
-  type PoolRecon, type RoomRecon, type DateRange,
+  maintenancePools, inRange,
+  type DateRange,
 } from "@/lib/pools";
+import { explosivesBalance, type ClassBalance, type ComponentBalance } from "@/lib/explosivesBalance";
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
   lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
@@ -293,7 +294,7 @@ export default function Dashboard() {
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} onNavigate={setView} />}
               {view === "bol" && <BolView items={items} txns={txns} />}
               {view === "stock" && <StockView items={items} tv={tv} />}
-              {view === "recon" && <ReconView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
+              {view === "recon" && <ReconView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}
               {view === "capabilities" && <CapabilitiesView items={items} lengths={lengths} reference={reference} capabilities={capabilities} />}
             </div>
@@ -2031,72 +2032,115 @@ function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResu
 }
 
 // ── Reconciliation ───────────────────────────────────────────────────────────
-function ReconView({ items, txns, range, rangeLabel }: { items: InventoryItem[]; txns: Transaction[]; range: DateRange; rangeLabel: string }) {
-  const recon: PoolRecon[] = useMemo(() => reconcilePools(items, txns, range), [items, txns, range]);
-  const rooms: RoomRecon[] = useMemo(() => reconcileRooms(recon), [recon]);
-  const flagged = recon.filter((p) => !p.matches);
-  const interventions = recon.reduce((s, p) => s + p.interventions, 0);
-
-  const cols: Col[] = [
-    { key: "qr", label: "Pool QR" }, { key: "description", label: "Description" }, { key: "location", label: "Room" },
-    { key: "actual", label: "Actual", num: true, fmt: fmtQty },
-    { key: "calculated", label: "Calc (log)", num: true, fmt: (v) => (v == null ? "—" : fmtNum(Number(v))) },
-    { key: "diff", label: "Diff", num: true, fmt: (v) => (Number(v) === 0 ? "0" : signed(Number(v))) },
-    { key: "in_qty", label: "In", num: true, fmt: fmtQty },
-    { key: "out_qty", label: "Out", num: true, fmt: fmtQty },
-    { key: "interventions", label: "Manual fixes", num: true },
-    { key: "last_txn", label: "Last move", fmt: fmtTs },
-  ];
-  const rows = recon.slice().sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff) || b.actual - a.actual).map((p) => ({ ...p })) as unknown as Record<string, unknown>[];
+// Month-end explosives balance — issued to production vs produced (finished
+// goods) + destroyed (NDT), per component, with the manual-adjustment audit
+// columns kept visible. Replaces the old calc-vs-actual pool scan check.
+function ReconView({ items, txns, contents, range, rangeLabel }:
+  { items: InventoryItem[]; txns: Transaction[]; contents: BatchContent[]; range: DateRange; rangeLabel: string }) {
+  const bal = useMemo(() => explosivesBalance(items, txns, contents, range, todayKey()), [items, txns, contents, range]);
+  const t = {
+    consumedFg: bal.classes.reduce((s, c) => s + c.consumedFg, 0),
+    destroyedNdt: bal.classes.reduce((s, c) => s + c.destroyedNdt, 0),
+    closing: bal.classes.reduce((s, c) => s + c.closing, 0),
+    corrections: bal.classes.reduce((s, c) => s + c.corrections, 0),
+  };
 
   return (
     <>
-      <div className="text-sm text-muted">Calc-vs-actual is all-time · flows &amp; manual fixes for {rangeLabel}</div>
-      {flagged.length > 0 ? (
+      <div className="text-sm text-muted">Explosives balance for <b className="text-fg">{rangeLabel}</b> — each component reconciled through the flow: issued to production → consumed into finished goods or destroyed (NDT). Figures per the transaction log + NDT batch contents.</div>
+
+      {bal.flaggedCount > 0 ? (
         <Card className="border-t-4 border-t-danger"><CardBody className="flex items-center gap-3 font-semibold text-danger">
-          <AlertTriangle size={20} /> {flagged.length} pool(s) where the sheet quantity ≠ the transaction log — investigate a missed/incorrect scan.
+          <AlertTriangle size={20} /> {bal.flaggedCount} component(s) flagged — negative/impossible stock, a large manual correction, or the ledger not matching live stock. Investigate below.
         </CardBody></Card>
       ) : (
         <Card className="border-t-4 border-t-ok"><CardBody className="flex items-center gap-3 font-semibold text-ok">
-          <CheckCircle2 size={20} /> Every explosive pool reconciles — sheet quantities match the transaction log.
+          <CheckCircle2 size={20} /> No balance anomalies for {rangeLabel} — every tracked component reconciles.
         </CardBody></Card>
       )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Pools reconciled" value={recon.length} />
-        <Stat label="Out of balance" value={flagged.length} status={flagged.length ? "bad" : "ok"} />
-        <Stat label="Manual fixes" value={interventions} status={interventions ? "warn" : "ok"} sub={`${rangeLabel} · reconcile/correction`} />
-        <Stat label="Rooms" value={rooms.length} />
+        <Stat label="Consumed → finished goods" value={fmtNum(t.consumedFg)} sub={`backflush · ${bal.totalVariants} component(s)`} />
+        <Stat label="Destroyed (NDT)" value={fmtNum(t.destroyedNdt)} sub="NDT batch contents" />
+        <Stat label="On hand (period end)" value={fmtNum(t.closing)} sub="reconstructed closing stock" />
+        <Stat label="Manual corrections" value={signed(t.corrections)} status={t.corrections ? "warn" : "ok"} sub="reconcile / correction" />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {rooms.map((r) => (
-          <Card key={r.room} className={r.balanced ? "" : "border-t-4 border-t-danger"}>
-            <CardBody>
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-fg">{r.room}</span>
-                <Badge tone={r.balanced ? "ok" : "danger"}>{r.balanced ? "Balanced" : `${r.flagged} flagged`}</Badge>
-              </div>
-              <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                <div><div className="text-xs text-muted">In</div><div className="font-semibold text-ok">{fmtNum(r.in_qty)}</div></div>
-                <div><div className="text-xs text-muted">Out</div><div className="font-semibold text-danger">{fmtNum(r.out_qty)}</div></div>
-                <div><div className="text-xs text-muted">Net</div><div className="font-semibold text-fg">{signed(r.net)}</div></div>
-              </div>
-              <div className="mt-3 flex justify-between border-t border-border pt-2 text-xs text-muted">
-                <span>{r.pools} pools · {fmtNum(r.actual)} on hand</span>
-                {r.interventions > 0 && <span className="text-warn">{r.interventions} manual fix(es)</span>}
-              </div>
-            </CardBody>
-          </Card>
-        ))}
-      </div>
+      {bal.classes.map((c) => <BalanceClassCard key={c.cls} c={c} />)}
 
-      <Card><CardBody>
-        <div className="mb-1 text-sm font-semibold text-fg">Pool-level reconciliation</div>
-        <div className="mb-3 text-xs text-muted">Actual = sheet quantity · Calc = latest value in the transaction log · Diff ≠ 0 means the pool changed outside the logged flow.</div>
-        <Grid cols={cols} rows={rows} tone={(r) => (!(r.matches as boolean) ? "bad" : (r.interventions as number) > 0 ? "warn" : undefined)} maxH="32rem" />
+      <Card><CardBody className="text-xs leading-relaxed text-muted">
+        <b className="text-fg">How to read this.</b> For each component: <b>Opening</b> + <b>In</b> − <b>→ Finished goods</b> − <b>Destroyed</b> ± <b>Corrections</b> − <b>Out</b> = <b>Closing</b> — the ledger always ties Opening→Closing (it is the transaction log).
+        {" "}<b>→ Finished goods</b> is the production backflush (clean); <b>Destroyed (NDT)</b> is from the NDT batch contents (an independent source, shown for cross-reference).
+        {" "}<b>In</b> and <b>Out</b> are gross pool movements and <i>include internal pool-to-pool relocations</i>, so treat them as upper bounds, not pure issue/consumption.
+        {" "}The reliable &ldquo;something is missing&rdquo; signals are the <b className="text-danger">flags</b>: <i>negative stock</i> (more consumed/destroyed than ever existed — impossible), <i>large correction</i> (a count had to be manually overridden), and <i>ledger ≠ live stock</i> (reconstructed closing doesn&apos;t match the sheet&apos;s current quantity). EZ-blocks/bushings have no separate NDT line (destroyed inside a detonator assembly), so their Destroyed (NDT) is 0 by design.
       </CardBody></Card>
     </>
+  );
+}
+
+const bnum = (v: number, zero = "—") => (Math.abs(v) < 0.5 ? zero : fmtNum(Math.round(v)));
+
+function BalanceClassCard({ c }: { c: ClassBalance }) {
+  return (
+    <Card className={c.flagged ? "border-t-4 border-t-danger" : ""}><CardBody>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-fg">{c.cls} <span className="font-normal text-muted">· {c.rows.length} variant(s) · in {c.unit}</span></div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted">→ finished goods <b className="text-fg">{bnum(c.consumedFg, "0")}</b> · destroyed <b className="text-fg">{bnum(c.destroyedNdt, "0")}</b> · on hand <b className="text-fg">{bnum(c.closing, "0")}</b></span>
+          {c.flagged > 0 ? <Badge tone="danger">{c.flagged} flagged</Badge> : <Badge tone="ok">clear</Badge>}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[46rem] text-sm">
+          <thead className="text-left text-xs uppercase tracking-wide text-muted">
+            <tr className="border-b border-border">
+              <th className="py-1.5 pr-2 font-medium">Component</th>
+              <th className="px-2 py-1.5 text-right font-medium">Opening</th>
+              <th className="px-2 py-1.5 text-right font-medium" title="Gross pool inflow, incl. internal transfers">In</th>
+              <th className="px-2 py-1.5 text-right font-medium">→ Fin. goods</th>
+              <th className="px-2 py-1.5 text-right font-medium">Destroyed (NDT)</th>
+              <th className="px-2 py-1.5 text-right font-medium">Corrections</th>
+              <th className="px-2 py-1.5 text-right font-medium" title="Gross pool outflow excl. finished goods, incl. internal transfers">Out</th>
+              <th className="px-2 py-1.5 text-right font-medium">Closing</th>
+              <th className="px-2 py-1.5 font-medium">Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            {c.rows.map((r) => <BalanceRow key={r.variant} r={r} />)}
+            <tr className="border-t-2 border-border font-semibold text-fg">
+              <td className="py-1.5 pr-2">Class total</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.opening, "0")}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.issued, "0")}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.consumedFg, "0")}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.destroyedNdt, "0")}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{c.corrections ? signed(Math.round(c.corrections)) : "—"}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.otherOut, "0")}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(c.closing, "0")}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </CardBody></Card>
+  );
+}
+
+function BalanceRow({ r }: { r: ComponentBalance }) {
+  const flagged = r.flags.length > 0;
+  return (
+    <tr className={`border-b border-border/60 ${flagged ? "bg-danger/5" : ""}`}>
+      <td className="py-1.5 pr-2">{r.variant}{r.pools > 1 ? <span className="text-muted"> · {r.pools} pools</span> : ""}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.opening)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.issued)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.consumedFg)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.destroyedNdt)}</td>
+      <td className={`px-2 py-1.5 text-right tabular-nums ${r.corrections ? "text-warn" : ""}`}>{r.corrections ? signed(Math.round(r.corrections)) : "—"}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.otherOut)}</td>
+      <td className={`px-2 py-1.5 text-right tabular-nums font-medium ${r.closing < -0.5 ? "text-danger" : "text-fg"}`}>{bnum(r.closing, "0")}</td>
+      <td className="px-2 py-1.5">
+        {flagged && <span className="inline-flex flex-wrap gap-1">{r.flags.map((f) => <Badge key={f} tone="danger">{f}</Badge>)}</span>}
+      </td>
+    </tr>
   );
 }
 
