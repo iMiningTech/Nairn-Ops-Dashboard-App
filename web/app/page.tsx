@@ -283,7 +283,7 @@ export default function Dashboard() {
             <div className="space-y-6">
               {view === "overview" && <OverviewView items={items} txns={txns} targets={targets} tickets={tickets} events={ticketEvents} qc={qc} decon={decon} eos={eos} tv={tv} />}
               {view === "monthly" && <MonthlyView items={items} txns={txns} targets={targets} tickets={tickets} events={ticketEvents} qc={qc} eos={eos} month={hi.slice(0, 7)} />}
-              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} qc={qc} contents={batchContents} tickets={tickets} events={ticketEvents} eos={eos} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
+              {view === "report" && <MonthlyExportView items={items} txns={txns} users={users} targets={targets} qc={qc} decon={decon} contents={batchContents} tickets={tickets} events={ticketEvents} eos={eos} defaultMonth={hi.slice(0, 7)} generatedAt={lastUpdated} />}
               {view === "operators" && <OperatorsView txns={txns} users={users} range={range} rangeLabel={rangeLabel} />}
               {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
@@ -798,16 +798,16 @@ function MonthlyView({ items, txns, targets, tickets, events, qc, eos, month: m 
 // ── MONTHLY EXPORT ───────────────────────────────────────────────────────────
 // One-click consolidated Markdown export of every tab for a chosen month, built
 // to paste straight into Claude Desktop as the input for the human monthly report.
-function MonthlyExportView({ items, txns, users, targets, qc, contents, tickets, events, eos, defaultMonth, generatedAt }:
-  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; qc: QcCheck[]; contents: BatchContent[]; tickets: Ticket[]; events: TicketEvent[]; eos: ShiftReport[]; defaultMonth: string; generatedAt: string | null }) {
+function MonthlyExportView({ items, txns, users, targets, qc, decon, contents, tickets, events, eos, defaultMonth, generatedAt }:
+  { items: InventoryItem[]; txns: Transaction[]; users: User[]; targets: DailyTarget[]; qc: QcCheck[]; decon: Decon[]; contents: BatchContent[]; tickets: Ticket[]; events: TicketEvent[]; eos: ShiftReport[]; defaultMonth: string; generatedAt: string | null }) {
   const [month, setMonth] = useState(defaultMonth);
   const [copied, setCopied] = useState(false);
   const maxMonth = todayKey().slice(0, 7);
 
   const md = useMemo(() => buildMonthlyReport({
-    items, txns, users, targets, qc, contents, tickets, events, eos,
+    items, txns, users, targets, qc, decon, contents, tickets, events, eos,
     month, todayKey: todayKey(), generatedAt, shiftStartHour: SHIFT_START_HOUR,
-  }), [items, txns, users, targets, qc, contents, tickets, events, eos, month, generatedAt]);
+  }), [items, txns, users, targets, qc, decon, contents, tickets, events, eos, month, generatedAt]);
 
   const monthLabel = (() => { const [y, mm] = month.split("-").map(Number); return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }); })();
 
@@ -830,7 +830,7 @@ function MonthlyExportView({ items, txns, users, targets, qc, contents, tickets,
           <div>
             <div className="text-base font-semibold text-fg">Monthly report export — {monthLabel}</div>
             <div className="mt-1 max-w-2xl text-sm text-muted">
-              Pulls every tab (production, operators, breakdowns &amp; QC, destruction, sales, live inventory)
+              Pulls every tab (production, operators, breakdowns &amp; QC, decontamination, destruction, sales, live inventory)
               into one Markdown document. <span className="font-medium text-fg">Copy</span> it and paste into Claude
               Desktop as the input for your monthly report, or <span className="font-medium text-fg">Download</span> the
               <code className="mx-1 rounded bg-bg px-1 py-0.5 text-xs">.md</code> file.

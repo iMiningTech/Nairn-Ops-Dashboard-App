@@ -10,7 +10,7 @@
 // today for the in-progress month). Inventory sections are a live "as of now"
 // snapshot and are labelled as such.
 
-import type { InventoryItem, Transaction, User, DailyTarget, QcCheck, BatchContent, Ticket, TicketEvent, ShiftReport } from "@/lib/api";
+import type { InventoryItem, Transaction, User, DailyTarget, QcCheck, Decon, BatchContent, Ticket, TicketEvent, ShiftReport } from "@/lib/api";
 import { fmtNum, fmtMins, fmtClock, shortDay, fmtDate, fmtTime, dateKey } from "@/lib/utils";
 import {
   monthTotals, productionByDay, productionVariants, startDeadtimeByDay,
@@ -30,6 +30,7 @@ export type ReportInput = {
   users: User[];
   targets: DailyTarget[];
   qc: QcCheck[];
+  decon: Decon[];
   contents: BatchContent[];
   tickets: Ticket[];
   events: TicketEvent[];
@@ -72,7 +73,7 @@ function monthMeta(month: string, todayKey: string) {
 }
 
 export function buildMonthlyReport(inp: ReportInput): string {
-  const { items, txns, users, targets, qc, contents, tickets, events, eos, month, todayKey } = inp;
+  const { items, txns, users, targets, qc, decon, contents, tickets, events, eos, month, todayKey } = inp;
   const shiftStart = inp.shiftStartHour ?? 6;
   const { label, from, to, range } = monthMeta(month, todayKey);
   const out: string[] = [];
@@ -159,12 +160,34 @@ export function buildMonthlyReport(inp: ReportInput): string {
   P();
 
   // ── 4. Breakdowns (maintenance tickets) & QC ────────────────────────────────
-  P(`## 4. Breakdowns (maintenance tickets) & QC`);
+  P(`## 4. Breakdowns (maintenance tickets), QC & decontamination`);
   P(`### Breakdown tickets — ${label}`);
   P(`${nf(tm.raised)} raised · ${nf(tm.closed)} closed${tm.cancelled ? ` · ${tm.cancelled} cancelled` : ""} · ${nf(tm.openTotal)} open now (${tm.openCriticalHigh} Critical/High). Avg time to resolve ${fmtHours(tm.avgResolveHours)} · avg first response ${fmtHours(tm.avgFirstResponseHours)}.`);
-  P(mdTable(["Ticket", "Line", "Title", "Severity", "Status", "Created", "Resolve", "1st resp"],
-    ticketsMonth.map((t) => [t.id, t.line_full, t.title, t.severity, t.status, fmtTime(t.created_at), fmtHours(t.resolve_hours), fmtHours(t.first_response_hours)]),
-    ["l", "l", "l", "l", "l", "l", "r", "r"]));
+  P(mdTable(["Ticket", "Line", "Station", "Title", "Severity", "Status", "Created", "Resolve", "1st resp"],
+    ticketsMonth.map((t) => [t.id, t.line_full, t.station || "—", t.title, t.severity, t.status, fmtTime(t.created_at), fmtHours(t.resolve_hours), fmtHours(t.first_response_hours)]),
+    ["l", "l", "l", "l", "l", "l", "l", "r", "r"]));
+
+  // Problem → fix narrative: the whole value of the breakdown log for a monthly
+  // write-up. Each ticket's station, reported problem, and the solution/resolution.
+  const ticketsWithDetail = ticketsMonth.filter((t) => (t.description && t.description.trim()) || (t.resolution && t.resolution.trim()));
+  if (ticketsWithDetail.length) {
+    P(`#### Problem & fix detail`);
+    for (const t of ticketsWithDetail) {
+      const where = [t.line_full, t.station].filter(Boolean).join(" · ");
+      const meta = [t.severity, t.status, where].filter(Boolean).join(" · ");
+      P(`- **${t.id}** — ${t.title || "(no title)"}${meta ? ` _(${meta})_` : ""}`);
+      if (t.description && t.description.trim()) P(`  - **Problem:** ${esc(t.description)}`);
+      if (t.resolution && t.resolution.trim()) P(`  - **Solution:** ${esc(t.resolution)}`);
+      const tail = [
+        t.parts_count ? `${nf(t.parts_count)} part(s) used` : "",
+        t.photo_count ? `${nf(t.photo_count)} photo(s)` : "",
+        t.reopen_count ? `reopened ${nf(t.reopen_count)}×` : "",
+        t.closed_by ? `closed by ${t.closed_by}` : "",
+      ].filter(Boolean);
+      if (tail.length) P(`  - _${tail.join(" · ")}_`);
+    }
+    P();
+  }
 
   P(`### QC crimp checks — ${label}`);
   const qcFailsMonth = qc.filter((q) => q.status === "Fail" && logDayKey(q.at).startsWith(month))
@@ -175,6 +198,17 @@ export function buildMonthlyReport(inp: ReportInput): string {
     P(mdTable(["When", "Operator", "Check", "Mid", "Inhole", "Outhole"],
       qcFailsMonth.map((q) => [fmtTime(q.at), q.personnel || "—", q.type || "—", mm(q.mid_mm), mm(q.inhole_mm), mm(q.outhole_mm)]),
       ["l", "l", "l", "r", "r", "r"]));
+  }
+
+  P(`### Decontamination — ${label}`);
+  const deconMonth = decon.filter((d) => logDayKey(d.at).startsWith(month))
+    .slice().sort((a, b) => (Date.parse(b.at || "") || 0) - (Date.parse(a.at || "") || 0));
+  const hmxSpills = deconMonth.filter((d) => d.hmx_spill).length;
+  P(`${nf(deconMonth.length)} decontamination event(s)${hmxSpills ? ` · **${nf(hmxSpills)} with HMX spill**` : " · no HMX spills"}.`);
+  if (deconMonth.length) {
+    P(mdTable(["When", "Line", "HMX spill"],
+      deconMonth.map((d) => [fmtTime(d.at), d.line || "—", d.hmx_spill ? "Yes" : "No"]),
+      ["l", "l", "l"]));
   }
   P();
 
