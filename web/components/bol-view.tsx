@@ -103,7 +103,11 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
   const saleOperator = useMemo(() => matchingSigs.find((s) => s.operator)?.operator || "", [matchingSigs]);
 
   const applySignature = (s: Signature) =>
-    setFields((f) => ({ ...f, driver: s.receiver_name || f.driver, signatureUrl: s.drive_url, receiverDate: s.timestamp ? fmtDate(s.timestamp) : f.receiverDate }));
+    // The consignee signs at collection, so its timestamp is the collection date —
+    // set both the signed-date line and the document Date to it (editable after).
+    setFields((f) => ({ ...f, driver: s.receiver_name || f.driver, signatureUrl: s.drive_url,
+      receiverDate: s.timestamp ? fmtDate(s.timestamp) : f.receiverDate,
+      date: s.timestamp ? fmtDate(s.timestamp) : f.date }));
   const clearSignature = () => setFields((f) => ({ ...f, signatureUrl: "", receiverDate: "" }));
   const applyConsignorSig = (s: Signature) =>
     setFields((f) => ({ ...f, consignor: s.receiver_name || f.consignor, consignorSigUrl: s.drive_url, consignorStamp: "", consignorDate: s.timestamp ? fmtDate(s.timestamp) : f.consignorDate }));
@@ -207,15 +211,23 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     const qrs = r.box_qrs.split(",").map((s) => s.trim()).filter(Boolean);
     const pos = new Set(qrs.map(poForQr).filter(Boolean).map(poNorm));
     const po = Array.from(new Set(qrs.map(poForQr).filter(Boolean))).join(", ");
-    const sig = r.signature_url ? signatures.find((s) => s.drive_url && s.drive_url === r.signature_url) : undefined;
-    // Missing register Date → fall back to when the BOL was ISSUED (Created_At),
-    // NOT today, so a reprint shows the real original date.
-    const createdDate = r.created_at ? fmtDate(r.created_at) : "";
-    const docDate = r.date || (createdDate && createdDate !== "—" ? createdDate : fmtDate(new Date().toISOString()));
-    const receiverDate = (sig?.timestamp ? fmtDate(sig.timestamp) : "") || docDate;   // consignee date — always populated
-    // Re-derive the consignor from the live Signatures tab by this BOL's PO, so a
-    // reprint reflects a consignor signature / operator attestation captured for it.
+    // All signatures captured for this BOL's PO(s) — drives both the date and the
+    // consignor block below.
     const poSigs = pos.size ? signatures.filter((s) => s.po_number && pos.has(poNorm(s.po_number))) : [];
+    // The exact consignee signature stored on this BOL (by URL), else the earliest
+    // consignee signature captured for the PO.
+    const sig = (r.signature_url ? signatures.find((s) => s.drive_url && s.drive_url === r.signature_url) : undefined)
+      || poSigs.filter((s) => !isConsignorRole(s) && s.timestamp)
+               .sort((a, b) => (Date.parse(a.timestamp) || 0) - (Date.parse(b.timestamp) || 0))[0];
+    // The document date is the COLLECTION date — when the receiver signed at pickup —
+    // which routinely pre-dates when the BOL was printed/registered. Prefer the
+    // captured consignee signature's date; then the stored register Date; then the
+    // creation timestamp (never today). This also makes the date robust to the
+    // register's Date column not being saved.
+    const collectionDate = sig?.timestamp ? fmtDate(sig.timestamp) : "";
+    const createdDate = r.created_at ? fmtDate(r.created_at) : "";
+    const docDate = collectionDate || r.date || (createdDate && createdDate !== "—" ? createdDate : fmtDate(new Date().toISOString()));
+    const receiverDate = collectionDate || docDate;   // consignee date — always populated
     const rConsignorSig = poSigs.find((s) => isConsignorRole(s) && s.drive_url);
     const rOperator = poSigs.find((s) => s.operator)?.operator || "";
     let consignor = r.consignor_name || "";
