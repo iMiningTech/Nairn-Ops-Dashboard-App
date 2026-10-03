@@ -204,15 +204,14 @@ export function explosivesBalance(
 // entries that destroyed it that day — for tracing where a month-end discrepancy
 // enters (e.g. a lone manual correction on one delay, or NDT not booked to stock).
 export type NdtDayEntry = { batch: string; qty: number; entry: string; line: string };
+// Three numbers per day for one component, on the PRODUCTION FLOOR pool.
 export type DayLedger = {
   day: string;
-  inQty: number;           // gross pool inflow (incl. internal transfers)
-  consumedFg: number;      // backflush into finished goods that day
-  destroyedPool: number;   // pool waste/testing decrements
-  otherOut: number;        // other non-FG outflow
-  corrections: number;     // manual reconcile/correction (signed)
-  net: number;             // net pool change that day (all movements)
-  ndt: number;             // units destroyed in NDT batches that day (independent)
+  issued: number;      // net shells issued to production = onto floor − returned
+                       // (every non-production move is a transfer: leaving the
+                       // component room adds, a return subtracts — any reason)
+  production: number;  // consumed into finished goods that day (backflush)
+  ndt: number;         // destroyed in NDT batches that day (from the batch contents)
   ndtEntries: NdtDayEntry[];
 };
 
@@ -220,13 +219,17 @@ export function componentDailyLedger(
   items: InventoryItem[], txns: Transaction[], contents: BatchContent[],
   cls: BalanceClass, variantKey: string, range: DateRange,
 ): DayLedger[] {
+  // Production-floor pool(s) only ("-PF") — where shells land when issued from the
+  // component room and are consumed into finished goods. On this pool every move is
+  // either a backflush (production) or a transfer; a transfer in = issued, a
+  // transfer back = returned, regardless of its reason.
   const qrs = new Set(
-    items.filter((i) => isExplosivePool(i) && classifyComponent(i.description) === cls && normDesc(i.description) === variantKey)
+    items.filter((i) => isExplosivePool(i) && i.qr.endsWith("-PF") && classifyComponent(i.description) === cls && normDesc(i.description) === variantKey)
       .map((i) => i.qr));
   const byDay = new Map<string, DayLedger>();
   const get = (d: string) => {
     let r = byDay.get(d);
-    if (!r) { r = { day: d, inQty: 0, consumedFg: 0, destroyedPool: 0, otherOut: 0, corrections: 0, net: 0, ndt: 0, ndtEntries: [] }; byDay.set(d, r); }
+    if (!r) { r = { day: d, issued: 0, production: 0, ndt: 0, ndtEntries: [] }; byDay.set(d, r); }
     return r;
   };
 
@@ -237,12 +240,8 @@ export function componentDailyLedger(
     const d = num(t.new_value) - num(t.old_value);
     if (!d) continue;
     const r = get(k);
-    r.net += d;
-    if (t.type === "POOL_BOM_DECREMENT") r.consumedFg += -d;
-    else if (CORRECTION_REASONS.has(t.reason)) r.corrections += d;
-    else if (DESTROY_REASONS.has(t.reason)) r.destroyedPool += -d;
-    else if (d > 0) r.inQty += d;
-    else r.otherOut += -d;
+    if (t.type === "POOL_BOM_DECREMENT") r.production += -d;   // consumed into finished goods
+    else r.issued += d;                                        // transfer: onto floor (+) / returned (−)
   }
 
   for (const c of contents) {

@@ -2096,7 +2096,7 @@ function ReconView({ items, txns, contents, range, rangeLabel }:
             ))}
           </select>
         </div>
-        <div className="mb-3 text-xs text-muted">Every pool movement for the selected component by day, with the NDT batch codes that destroyed it — <b className="text-fg">→ Fin. goods</b> is production that day. Tip: click any component row above to load it here.</div>
+        <div className="mb-3 text-xs text-muted"><b className="text-fg">Issued to production</b> = net shells off the component room (onto the floor adds, returns subtract, any reason) · <b className="text-fg">Production</b> = made into finished goods that day · <b className="text-fg">NDT</b> = destroyed that day (hover for batch codes). Tip: click any component row above to load it here.</div>
         {!sel ? <div className="py-6 text-center text-sm text-muted">Pick a component.</div>
           : ledger.length === 0 ? <div className="py-6 text-center text-sm text-muted">No movements for {sel.label} in {rangeLabel}.</div>
           : <DailyLedgerTable rows={ledger} unit={sel.unit} />}
@@ -2181,57 +2181,37 @@ function BalanceRow({ r, selected, onPick }: { r: ComponentBalance; selected: bo
 
 function DailyLedgerTable({ rows, unit }: { rows: DayLedger[]; unit: string }) {
   const sum = (f: (r: DayLedger) => number) => rows.reduce((s, r) => s + f(r), 0);
-  const u = unit === "m" ? " m" : "";
+  const u = unit === "m" ? " (m)" : "";
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[52rem] text-sm">
+      <table className="w-full min-w-[32rem] text-sm">
         <thead className="text-left text-xs uppercase tracking-wide text-muted">
           <tr className="border-b border-border">
             <th className="py-1.5 pr-2 font-medium">Day</th>
-            <th className="px-2 py-1.5 text-right font-medium">In</th>
-            <th className="px-2 py-1.5 text-right font-medium">→ Fin. goods</th>
-            <th className="px-2 py-1.5 text-right font-medium">Waste</th>
-            <th className="px-2 py-1.5 text-right font-medium">Out</th>
-            <th className="px-2 py-1.5 text-right font-medium">Corrections</th>
-            <th className="px-2 py-1.5 text-right font-medium">Net Δ</th>
-            <th className="px-2 py-1.5 text-right font-medium">NDT</th>
-            <th className="px-2 py-1.5 font-medium">NDT batches (qty · type)</th>
+            <th className="px-3 py-1.5 text-right font-medium" title="Net shells to production: onto the floor adds, returned to the component room subtracts (any reason)">Issued to production{u}</th>
+            <th className="px-3 py-1.5 text-right font-medium" title="Consumed into finished goods (backflush)">Production</th>
+            <th className="px-3 py-1.5 text-right font-medium" title="Destroyed in NDT batches — hover for batch codes">NDT</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.day} className={`border-b border-border/60 ${r.corrections ? "bg-warn/5" : ""}`}>
-              <td className="py-1.5 pr-2 font-medium text-fg">{shortDay(r.day)}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.inQty)}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.consumedFg)}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums">{bnum(r.destroyedPool)}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums text-muted">{bnum(r.otherOut)}</td>
-              <td className={`px-2 py-1.5 text-right tabular-nums ${r.corrections ? "font-semibold text-warn" : ""}`}>{r.corrections ? signed(Math.round(r.corrections)) : "—"}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums text-fg">{r.net ? signed(Math.round(r.net)) : "0"}</td>
-              <td className="px-2 py-1.5 text-right tabular-nums">{r.ndt ? fmtNum(Math.round(r.ndt)) : "—"}</td>
-              <td className="px-2 py-1.5 text-xs text-muted">
-                {r.ndtEntries.length === 0 ? "—" : (
-                  <span className="inline-flex flex-wrap gap-1">
-                    {r.ndtEntries.map((e, i) => (
-                      <span key={i} className="rounded border border-border px-1.5 py-0.5 font-mono" title={`${e.entry}${e.line ? ` · ${e.line}` : ""}`}>
-                        {e.batch || "?"} <span className="text-fg">({fmtNum(Math.round(e.qty))}·{(e.entry || "").slice(0, 4)})</span>
-                      </span>
-                    ))}
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const ndtTitle = r.ndtEntries.map((e) => `${e.batch || "?"} — ${fmtNum(Math.round(e.qty))} (${e.entry})`).join("\n") || undefined;
+            return (
+              <tr key={r.day} className="border-b border-border/60">
+                <td className="py-1.5 pr-2 font-medium text-fg">{shortDay(r.day)}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{r.issued ? signed(Math.round(r.issued)) : "—"}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{r.production ? fmtNum(Math.round(r.production)) : "—"}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums" title={ndtTitle}>
+                  {r.ndt ? <span className="underline decoration-dotted">{fmtNum(Math.round(r.ndt))}</span> : "—"}
+                </td>
+              </tr>
+            );
+          })}
           <tr className="border-t-2 border-border font-semibold text-fg">
-            <td className="py-1.5 pr-2">Total{u}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.inQty), "0")}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.consumedFg), "0")}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.destroyedPool), "0")}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.otherOut), "0")}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{(() => { const v = sum((r) => r.corrections); return v ? signed(Math.round(v)) : "—"; })()}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{(() => { const v = sum((r) => r.net); return v ? signed(Math.round(v)) : "0"; })()}</td>
-            <td className="px-2 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.ndt), "0")}</td>
-            <td></td>
+            <td className="py-1.5 pr-2">Total</td>
+            <td className="px-3 py-1.5 text-right tabular-nums">{(() => { const v = sum((r) => r.issued); return v ? signed(Math.round(v)) : "0"; })()}</td>
+            <td className="px-3 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.production), "0")}</td>
+            <td className="px-3 py-1.5 text-right tabular-nums">{bnum(sum((r) => r.ndt), "0")}</td>
           </tr>
         </tbody>
       </table>
