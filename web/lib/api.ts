@@ -207,6 +207,22 @@ export type BatchContent = {
   notes: string;
 };
 
+// A held assembly / partial case parked in a holding bay (Holding_Contents tab).
+// HOLD-VIPERDET / HOLD-AXXIS live in the NDT Room — e.g. end-of-shift leftovers or
+// test-failed assemblies awaiting retest/destruction, so they're off the floor but
+// still account for produced components.
+export type HoldingContent = {
+  timestamp: string | null;
+  holding_qr: string;      // HOLD-VIPERDET | HOLD-AXXIS
+  line: string;            // Production_Line
+  item: string;            // Item_Description
+  quantity: number;
+  unit: string;            // units | assemblies | …
+  logged_by: string;
+  notes: string;
+  entry_id: string;
+};
+
 // ── Apps Script transport (JSON) ─────────────────────────────────────────────
 async function getJson<T>(action: string, params: Record<string, string> = {}): Promise<T> {
   const qs = new URLSearchParams({ action, ...params });
@@ -493,6 +509,20 @@ function mapBatchContentRow(r: Record<string, string>): BatchContent {
   };
 }
 
+function mapHoldingContentRow(r: Record<string, string>): HoldingContent {
+  return {
+    timestamp: orNull(r["Timestamp"] ?? ""),
+    holding_qr: r["Holding_QR"] ?? "",
+    line: r["Production_Line"] ?? "",
+    item: r["Item_Description"] ?? "",
+    quantity: toNum(r["Quantity"]),
+    unit: r["Unit"] ?? "",
+    logged_by: r["Logged_By"] ?? "",
+    notes: r["Notes"] ?? "",
+    entry_id: r["Entry_ID"] ?? "",
+  };
+}
+
 function mapTransactionRow(r: Record<string, string>): Transaction {
   return {
     timestamp: orNull(r["Timestamp"] ?? ""),
@@ -573,6 +603,16 @@ export const api = {
   async batchContents(): Promise<{ items: BatchContent[] }> {
     if (MODE === "gviz") return { items: (await gvizTab("NDT_Batch_Contents")).map(mapBatchContentRow).filter((c) => c.batch_qr) };
     return getJson<{ items: BatchContent[] }>("batchContents");
+  },
+  // Held assemblies / partial cases in the holding bays (Holding_Contents tab).
+  // Tolerate the tab's absence.
+  async holdingContents(): Promise<{ items: HoldingContent[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Holding_Contents")).map(mapHoldingContentRow).filter((h) => h.holding_qr) };
+      return await getJson<{ items: HoldingContent[] }>("holdingContents");
+    } catch {
+      return { items: [] };
+    }
   },
   // Maintenance/breakdown tickets (Tickets + Ticket_Events tabs). Tolerate absence.
   async tickets(): Promise<{ items: Ticket[] }> {

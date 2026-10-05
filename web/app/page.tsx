@@ -8,7 +8,7 @@ import {
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
   FileDown, Copy, Check,
 } from "lucide-react";
-import { api, driveThumbUrl, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type ManufacturableLength, type RefRow, type IssuedBol, type Signature, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
+import { api, driveThumbUrl, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type HoldingContent, type ManufacturableLength, type RefRow, type IssuedBol, type Signature, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
 import { ChartCard, BarH, Donut, StackedBar } from "@/components/charts";
 import { uniqueSorted, groupSum, maxDate } from "@/lib/data";
@@ -1572,6 +1572,19 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
     return { locations, rows, colTotals, grandTotal: rows.reduce((s, r) => s + r.total, 0) };
   }, [data, pt, q]);
 
+  // Held assemblies / partial cases parked in the holding bays (NDT Room) — e.g.
+  // end-of-shift leftovers or test-failed assemblies. Loaded here so produced
+  // stock that's off the floor but not yet boxed is still visible.
+  const [holding, setHolding] = useState<HoldingContent[]>([]);
+  useEffect(() => { api.holdingContents().then((r) => setHolding(r.items)).catch(() => {}); }, []);
+  const heldBays = useMemo(() => {
+    const m = new Map<string, HoldingContent[]>();
+    for (const h of holding) { if (!h.item) continue; const k = h.holding_qr || "(unassigned)"; if (!m.has(k)) m.set(k, []); m.get(k)!.push(h); }
+    return Array.from(m, ([bay, rows]) => ({ bay, rows: rows.slice().sort((a, b) => (Date.parse(b.timestamp || "") || 0) - (Date.parse(a.timestamp || "") || 0)) }))
+      .sort((a, b) => a.bay.localeCompare(b.bay));
+  }, [holding]);
+  const heldTotal = useMemo(() => holding.reduce((s, h) => s + h.quantity, 0), [holding]);
+
   const aged = useMemo(() => agedFinishedGoods(items), [items]);
   const over12 = useMemo(() => aged.filter((b) => b.ageDays > 365), [aged]);
   const over24 = useMemo(() => aged.filter((b) => b.ageDays > 730), [aged]);
@@ -1613,6 +1626,52 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
             </div>
           </div>
           <Grid cols={listCols} rows={list as unknown as Record<string, unknown>[]} tone={() => (filter === "24" ? "bad" : "warn")} maxH="26rem" />
+        </CardBody></Card>
+      )}
+
+      {!customer && heldBays.length > 0 && (
+        <Card className="border-t-4 border-t-warn"><CardBody>
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+              <Clock size={16} className="text-warn" /> In holding — NDT Room (partial cases &amp; held assemblies)
+            </div>
+            <div className="text-xs text-muted"><span className="font-semibold text-fg">{fmtNum(heldTotal)}</span> held across {heldBays.length} bay(s)</div>
+          </div>
+          <div className="mb-3 text-xs text-muted">Produced assemblies parked off the floor (end-of-shift leftovers, failed/awaiting retest, staged for destruction) — not yet boxed as finished goods, but the components are consumed. From the holding bays&apos; contents.</div>
+          {heldBays.map(({ bay, rows }) => (
+            <div key={bay} className="mb-3 rounded-xl border border-border">
+              <div className="flex items-center justify-between border-b border-border bg-bg px-3 py-2 text-sm font-semibold text-fg">
+                <span>{bay}</span>
+                <span className="font-normal text-muted">{fmtNum(rows.reduce((s, h) => s + h.quantity, 0))} held · {rows.length} entr{rows.length === 1 ? "y" : "ies"}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[40rem] text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wide text-muted">
+                    <tr className="border-b border-border">
+                      <th className="px-3 py-1.5 font-medium">Item</th>
+                      <th className="px-3 py-1.5 font-medium">Line</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Qty</th>
+                      <th className="px-3 py-1.5 font-medium">Logged</th>
+                      <th className="px-3 py-1.5 font-medium">When</th>
+                      <th className="px-3 py-1.5 font-medium">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((h) => (
+                      <tr key={h.entry_id || `${h.item}-${h.timestamp}`} className="border-b border-border/60">
+                        <td className="px-3 py-1.5 font-medium text-fg">{h.item}</td>
+                        <td className="px-3 py-1.5 text-muted">{h.line || "—"}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{fmtNum(h.quantity)} <span className="text-muted">{h.unit}</span></td>
+                        <td className="px-3 py-1.5 text-muted">{h.logged_by || "—"}</td>
+                        <td className="px-3 py-1.5 text-muted">{fmtTime(h.timestamp)}</td>
+                        <td className="px-3 py-1.5 text-muted">{h.notes || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
         </CardBody></Card>
       )}
 
