@@ -9,13 +9,38 @@ import { productionLine } from "@/lib/production";
 
 export type Dg = { un: string; name: string; cls: string; pg: string; nemPerUnitG: number };
 
+// UN number per hazard class, by detonator type (standard DG pairings):
+//   ViperDet = non-electric detonator assemblies · Axxis = electronic detonators.
+// The hazard class comes from the box's Packaging_Class; the UN tracks the class.
+const UN_BY_CLASS: Record<string, Record<string, string>> = {
+  ViperDet: { "1.1B": "UN 0360", "1.4B": "UN 0361", "1.4S": "UN 0500" },
+  Axxis: { "1.1B": "UN 0511", "1.4B": "UN 0512", "1.4S": "UN 0513" },
+};
+const DG_NAME: Record<string, string> = {
+  ViperDet: "DETONATOR ASSEMBLIES, NON-ELECTRIC",
+  Axxis: "DETONATORS, ELECTRONIC PROGRAMMABLE",
+};
+
+// Normalise a Packaging_Class value to one of the three hazard classes.
+function hazClass(raw: string): "1.1B" | "1.4B" | "1.4S" | null {
+  const s = (raw || "").toUpperCase().replace(/\s+/g, "");
+  if (s === "1.1B") return "1.1B";
+  if (s === "1.4B") return "1.4B";
+  if (s === "1.4S") return "1.4S";
+  return null;
+}
+
 export function dgFor(i: InventoryItem): Dg | null {
   const pt = i.product_type.toUpperCase();
   const line = productionLine(i);
+  if (!line) return null;
   const nem = pt === "MS DUAL" ? 1.25 : pt === "QS" ? 0.25 : (line === "Axxis" ? 1.0 : 0);
-  if (line === "ViperDet") return { un: "UN 0360", name: "DETONATOR ASSEMBLIES, NON-ELECTRIC", cls: "1.1B", pg: "II", nemPerUnitG: nem };
-  if (line === "Axxis") return { un: "UN 0511", name: "DETONATOR ASSEMBLIES, ELECTRONIC PROGRAMMABLE", cls: "1.1B", pg: "II", nemPerUnitG: nem };
-  return null;
+  const byClass = UN_BY_CLASS[line];
+  if (!byClass) return null;
+  // Use the box's actual DG class; fall back to 1.1B (the higher hazard — never
+  // under-classify a shipping document) only when Packaging_Class is blank/unknown.
+  const cls = hazClass(i.packaging_class) ?? "1.1B";
+  return { un: byClass[cls], name: DG_NAME[line], cls, pg: "II", nemPerUnitG: nem };
 }
 
 export type BolLine = { un: string; name: string; cls: string; pg: string; description: string; packages: number; quantity: number; nemG: number };

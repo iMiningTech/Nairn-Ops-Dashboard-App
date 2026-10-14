@@ -53,6 +53,7 @@ export type InventoryItem = {
   prod_date: string | null;
   prod_shift: string;
   qc_person: string;
+  packaging_class: string;      // Packaging_Class — DG hazard class (1.1B | 1.4B | 1.4S)
 };
 
 export type StockResponse = {
@@ -425,6 +426,7 @@ function mapInventoryRow(r: Record<string, string>): InventoryItem {
     prod_date: orNull(r["ProdDate_Formatted"] ?? ""),
     prod_shift: r["ProdShift"] ?? "",
     qc_person: r["QC_Person"] ?? "",
+    packaging_class: (r["Packaging_Class"] ?? "").trim(),
   };
 }
 
