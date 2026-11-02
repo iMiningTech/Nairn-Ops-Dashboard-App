@@ -115,14 +115,18 @@ export type Breakdown = {
 };
 export type QcCheck = {
   at: string;
-  type: string;             // Mid Crimp at Station | Production Line Check
+  type: string;             // Check_Type (ViperDet) | derived; legacy: "Mid Crimp at Station"
   status: string;           // Pass | Fail | ""
   mid_mm: number | null;
   inhole_mm: number | null;
   outhole_mm: number | null;
   personnel: string;
+  line: string;             // Crimp_Log Line (Axxis | ViperDet); "" for legacy
+  variant: string;          // Crimp_Log Variant; "" for legacy
+  diameter_mm: number | null;      // Axxis crimp diameter (Crimp_Diameter_mm)
+  plug_distance_mm: number | null; // Axxis plug distance (Plug_Distance_mm)
 };
-export type Decon = { at: string; line: string; hmx_spill: boolean };
+export type Decon = { at: string; line: string; hmx_spill: boolean; decon_id: string; station: string };
 
 // ── Maintenance / breakdown tickets (new BlastStock ticketing) ───────────────
 // Tickets tab = one row per ticket (current state); Ticket_Events = append-only
@@ -313,6 +317,24 @@ function mapBreakdown(r: Record<string, string>, line: "ViperDet" | "Axxis"): Br
     personnel: r["Authorized Personnel"] || [r["Full Name - First Name"], r["Full Name - Last Name"]].filter(Boolean).join(" "),
   };
 }
+// Crimp_Log tab on the BlastStock master sheet (current source).
+function mapQcCrimpLog(r: Record<string, string>): QcCheck {
+  const n = (k: string) => (r[k]?.trim() ? toNum(r[k]) : null);
+  return {
+    at: r["Timestamp"] ?? "",
+    type: r["Check_Type"]?.trim() || (r["Line"] ? `${r["Line"]} crimp` : ""),
+    status: r["Result"] ?? "",
+    mid_mm: n("Mid_Crimp_mm"),
+    inhole_mm: n("Inhole_Crimp_mm"),
+    outhole_mm: n("Outhole_Crimp_mm"),
+    personnel: r["Logged_By"] ?? "",
+    line: r["Line"] ?? "",
+    variant: r["Variant"] ?? "",
+    diameter_mm: n("Crimp_Diameter_mm"),
+    plug_distance_mm: n("Plug_Distance_mm"),
+  };
+}
+// Legacy JotForm crimp sheet (pre-24 Sep 2026 history).
 function mapQc(r: Record<string, string>): QcCheck {
   return {
     at: r["Submission Date"] || r["Date & Time"] || "",
@@ -322,11 +344,25 @@ function mapQc(r: Record<string, string>): QcCheck {
     inhole_mm: r["Inhole Crimp (mm)"]?.trim() ? toNum(r["Inhole Crimp (mm)"]) : null,
     outhole_mm: r["Outhole Crimp (mm)"]?.trim() ? toNum(r["Outhole Crimp (mm)"]) : null,
     personnel: r["Authorized Personnel"] ?? "",
+    line: "", variant: "", diameter_mm: null, plug_distance_mm: null,
   };
 }
+// Decon_Log tab (current source). One row per station within a decon session,
+// keyed by Decon_ID — consumers dedupe by it to count sessions.
+function mapDeconLog(r: Record<string, string>): Decon {
+  const v = (r["HMX_Spill"] ?? "").trim().toLowerCase();
+  return {
+    at: r["Timestamp"] ?? "",
+    line: r["Line"] ?? "",
+    hmx_spill: /^(y|t|1|spill)/.test(v),
+    decon_id: r["Decon_ID"] ?? "",
+    station: r["Station"] ?? "",
+  };
+}
+// Legacy JotForm decon sheet (pre-24 Sep 2026 history).
 function mapDecon(r: Record<string, string>): Decon {
   const hmx = Object.entries(r).some(([k, v]) => k.includes("HMX powder spill") && String(v).trim() !== "");
-  return { at: r["Submission Date"] || r["Date & Time"] || "", line: "ViperDet", hmx_spill: hmx };
+  return { at: r["Submission Date"] || r["Date & Time"] || "", line: "ViperDet", hmx_spill: hmx, decon_id: "", station: "" };
 }
 
 function mapTicket(r: Record<string, string>): Ticket {
@@ -594,13 +630,20 @@ export const api = {
     ]);
     return { items: [...v, ...a] };
   },
+  // Crimp QC: current Crimp_Log tab on the master sheet, with the legacy JotForm
+  // rows merged underneath so pre-24-Sep history stays visible. Each source is
+  // independently tolerant of failure.
   async qcChecks(): Promise<{ items: QcCheck[] }> {
-    try { return { items: (await gvizByGid(EXT.qcCrimp.id, EXT.qcCrimp.gid)).map(mapQc) }; }
-    catch { return { items: [] }; }
+    const live = await gvizTab("Crimp_Log").then((rs) => rs.map(mapQcCrimpLog).filter((q) => q.at)).catch(() => [] as QcCheck[]);
+    const legacy = await gvizByGid(EXT.qcCrimp.id, EXT.qcCrimp.gid).then((rs) => rs.map(mapQc).filter((q) => q.at)).catch(() => [] as QcCheck[]);
+    return { items: [...live, ...legacy] };
   },
+  // Decontamination: current Decon_Log tab (one row per station, grouped by
+  // Decon_ID) + legacy JotForm rows underneath.
   async decon(): Promise<{ items: Decon[] }> {
-    try { return { items: (await gvizByGid(EXT.deconViper.id, EXT.deconViper.gid)).map(mapDecon).filter((d) => d.at) }; }
-    catch { return { items: [] }; }
+    const live = await gvizTab("Decon_Log").then((rs) => rs.map(mapDeconLog).filter((d) => d.at)).catch(() => [] as Decon[]);
+    const legacy = await gvizByGid(EXT.deconViper.id, EXT.deconViper.gid).then((rs) => rs.map(mapDecon).filter((d) => d.at)).catch(() => [] as Decon[]);
+    return { items: [...live, ...legacy] };
   },
   async batchContents(): Promise<{ items: BatchContent[] }> {
     if (MODE === "gviz") return { items: (await gvizTab("NDT_Batch_Contents")).map(mapBatchContentRow).filter((c) => c.batch_qr) };

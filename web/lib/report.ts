@@ -197,20 +197,30 @@ export function buildMonthlyReport(inp: ReportInput): string {
   P(`${nf(qcS.monthChecks)} check(s) · pass rate ${qcS.monthRate != null ? `${Math.round(qcS.monthRate * 100)}%` : "—"} · ${qcFailsMonth.length} fail(s).`);
   if (qcFailsMonth.length) {
     const mm = (n: number | null) => (n == null ? "—" : `${n}mm`);
-    P(mdTable(["When", "Operator", "Check", "Mid", "Inhole", "Outhole"],
-      qcFailsMonth.map((q) => [fmtTime(q.at), q.personnel || "—", q.type || "—", mm(q.mid_mm), mm(q.inhole_mm), mm(q.outhole_mm)]),
-      ["l", "l", "l", "r", "r", "r"]));
+    P(mdTable(["When", "Operator", "Line", "Check", "Mid", "Inhole", "Outhole", "Diameter", "Plug dist."],
+      qcFailsMonth.map((q) => [fmtTime(q.at), q.personnel || "—", q.line || "—", q.type || "—", mm(q.mid_mm), mm(q.inhole_mm), mm(q.outhole_mm), mm(q.diameter_mm), mm(q.plug_distance_mm)]),
+      ["l", "l", "l", "l", "r", "r", "r", "r", "r"]));
   }
 
   P(`### Decontamination — ${label}`);
-  const deconMonth = decon.filter((d) => logDayKey(d.at).startsWith(month))
-    .slice().sort((a, b) => (Date.parse(b.at || "") || 0) - (Date.parse(a.at || "") || 0));
-  const hmxSpills = deconMonth.filter((d) => d.hmx_spill).length;
-  P(`${nf(deconMonth.length)} decontamination event(s)${hmxSpills ? ` · **${nf(hmxSpills)} with HMX spill**` : " · no HMX spills"}.`);
-  if (deconMonth.length) {
-    P(mdTable(["When", "Line", "HMX spill"],
-      deconMonth.map((d) => [fmtTime(d.at), d.line || "—", d.hmx_spill ? "Yes" : "No"]),
-      ["l", "l", "l"]));
+  // Decon_Log is one row per station; collapse to a session by Decon_ID (legacy
+  // rows have none → key by time+line) so counts are sessions, not station lines.
+  const deconRows = decon.filter((d) => logDayKey(d.at).startsWith(month));
+  const sessMap = new Map<string, { at: string; line: string; hmx: boolean; stations: number }>();
+  for (const d of deconRows) {
+    const key = d.decon_id || `${d.at}|${d.line}`;
+    const s = sessMap.get(key) || { at: d.at, line: d.line, hmx: false, stations: 0 };
+    s.hmx = s.hmx || d.hmx_spill;
+    if (d.station) s.stations += 1;
+    sessMap.set(key, s);
+  }
+  const deconSessions = Array.from(sessMap.values()).sort((a, b) => (Date.parse(b.at || "") || 0) - (Date.parse(a.at || "") || 0));
+  const hmxSpills = deconSessions.filter((s) => s.hmx).length;
+  P(`${nf(deconSessions.length)} decontamination session(s)${hmxSpills ? ` · **${nf(hmxSpills)} with HMX spill**` : " · no HMX spills"}.`);
+  if (deconSessions.length) {
+    P(mdTable(["When", "Line", "Stations", "HMX spill"],
+      deconSessions.map((s) => [fmtTime(s.at), s.line || "—", s.stations || "—", s.hmx ? "Yes" : "No"]),
+      ["l", "l", "r", "l"]));
   }
   P();
 

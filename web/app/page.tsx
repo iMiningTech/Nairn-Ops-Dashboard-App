@@ -627,8 +627,7 @@ function OverviewView({ items, txns, targets, tickets, events, qc, decon, eos, t
             {dcn ? (
               <>
                 <div className="mt-2 text-2xl font-semibold text-fg">{fmtTime(dcn.at)}</div>
-                <div className="mt-1 text-sm text-muted">{dcn.daysSince === 0 ? "today" : `${dcn.daysSince} day(s) ago`} · ViperDet{dcn.hmx_spill ? " · " : ""}{dcn.hmx_spill ? <span className="font-semibold text-warn">HMX spill noted</span> : ""}</div>
-                <div className="mt-1 text-xs text-muted">Axxis decon log still to be created.</div>
+                <div className="mt-1 text-sm text-muted">{dcn.daysSince === 0 ? "today" : `${dcn.daysSince} day(s) ago`}{dcn.line ? ` · ${dcn.line}` : ""}{dcn.hmx_spill ? " · " : ""}{dcn.hmx_spill ? <span className="font-semibold text-warn">HMX spill noted</span> : ""}</div>
               </>
             ) : <div className="mt-2 text-sm text-muted">No decontamination log available.</div>}
           </CardBody></Card>

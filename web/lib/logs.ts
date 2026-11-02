@@ -82,8 +82,8 @@ export function qcSummary(items: QcCheck[], todayKey: string, monthPrefix: strin
 }
 
 // ── Decontamination ──────────────────────────────────────────────────────────
-export function lastDecon(items: Decon[]): { at: string; daysSince: number; hmx_spill: boolean } | null {
+export function lastDecon(items: Decon[]): { at: string; daysSince: number; hmx_spill: boolean; line: string } | null {
   const dated = items.filter((d) => !isNaN(ms(d.at))).sort((a, b) => ms(b.at) - ms(a.at));
   if (!dated.length) return null;
-  return { at: dated[0].at, daysSince: Math.floor((Date.now() - ms(dated[0].at)) / 86400000), hmx_spill: dated[0].hmx_spill };
+  return { at: dated[0].at, daysSince: Math.floor((Date.now() - ms(dated[0].at)) / 86400000), hmx_spill: dated[0].hmx_spill, line: dated[0].line };
 }
