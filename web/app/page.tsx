@@ -32,6 +32,7 @@ import { saleEvents, salesSummary, offSiteWithoutSale, type SaleEvent, type OffS
 import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroyed, consolidateDestroyedByType, weighWaste } from "@/lib/destruction";
 import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
+import { ReturnsView } from "@/components/returns-view";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz, dateKey } from "@/lib/utils";
 
@@ -49,7 +50,7 @@ const VIEWS = [
   { id: "financial", label: "Financial Lookup", icon: Hash },
   { id: "destruction", label: "Destruction & Waste", icon: Trash2 },
   { id: "sales", label: "Sales History", icon: Receipt },
-  { id: "bol", label: "Bill of Lading", icon: FileText },
+  { id: "bol", label: "Bill of Lading & Returns", icon: FileText },
   { id: "stock", label: "Filtered Inventory", icon: Search },
   { id: "recon", label: "Reconciliation", icon: Scale },
   { id: "maint", label: "Maintenance Stores", icon: Wrench },
@@ -292,7 +293,7 @@ export default function Dashboard() {
               {view === "financial" && <FinancialLookupView items={items} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} onNavigate={setView} />}
-              {view === "bol" && <BolView items={items} txns={txns} />}
+              {view === "bol" && <><BolView items={items} txns={txns} /><ReturnsView items={items} txns={txns} /></>}
               {view === "stock" && <StockView items={items} tv={tv} />}
               {view === "recon" && <ReconView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}
