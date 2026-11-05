@@ -55,8 +55,9 @@ function doGet(e) {
       case 'manufacturableLengths': return _json(manufacturableLengths_());
       case 'manufacturingReference': return _json(manufacturingReference_());
       case 'bols':          return _json(bols_());
+      case 'returns':       return _json(returns_());
       case 'signatures':    return _json(signatures_());
-      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'signatures'] });
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'returns', 'signatures'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -71,6 +72,7 @@ function doPost(e) {
     var body = {};
     try { body = JSON.parse(e.postData.contents); } catch (_) { return _json({ error: 'bad request body' }); }
     if (body.action === 'createBol') return _json(createBol_(body));
+    if (body.action === 'createReturn') return _json(createReturn_(body));
     if (body.action === 'updatePo' || body.action === 'amendSale') return _json(amendSale_(body));
     if (body.action === 'setTicketStation') return _json(setTicketStation_(body));
     return _json({ error: 'unknown action' });
@@ -109,6 +111,57 @@ function createBol_(b) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ── Write-back: Goods Return register ────────────────────────────────────────
+// POSTed from the dashboard as text/plain JSON {action:'createReturn', ...}.
+// Mirrors the BOL register: serialised sequential number RTN-YYYY-NNNN written to
+// a Return_Register tab (created on first use). A return note is the inbound twin
+// of a BOL — the plant is the consignee receiving the goods back.
+var RETURN_HEADERS = ['RTN_No', 'Created_At', 'Created_By', 'Date', 'Returned_From', 'Returned_To', 'Received_Into',
+  'Carrier', 'Received_By', 'Truck', 'Trailer', 'Total_Packages', 'Total_Quantity', 'Total_NEQ_kg', 'Include_NEQ',
+  'Classes', 'Box_QRs', 'Lines_JSON', 'Reason', 'Status'];
+
+function createReturn_(b) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);   // serialise so two issues never collide on a number
+  try {
+    var ss = _ss();
+    var sh = ss.getSheetByName('Return_Register');
+    if (!sh) { sh = ss.insertSheet('Return_Register'); sh.appendRow(RETURN_HEADERS); }
+    var tz = ss.getSpreadsheetTimeZone();
+    var year = Utilities.formatDate(new Date(), tz, 'yyyy');
+    var data = sh.getDataRange().getValues();
+    var max = 0, re = new RegExp('^RTN-' + year + '-(\\d+)$');
+    for (var i = 1; i < data.length; i++) {
+      var m = String(data[i][0] || '').match(re);
+      if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+    }
+    var rtnNo = 'RTN-' + year + '-' + ('0000' + (max + 1)).slice(-4);
+    var createdAt = Utilities.formatDate(new Date(), tz, 'M/d/yyyy H:mm:ss');
+    sh.appendRow([rtnNo, createdAt, b.created_by || '', b.date || '', b.returned_from || '', b.returned_to || '',
+      b.received_into || '', b.carrier || '', b.received_by || '', b.truck || '', b.trailer || '',
+      b.total_packages || 0, b.total_quantity || 0, b.total_neq_kg || 0, b.include_neq ? 'TRUE' : 'FALSE',
+      b.classes || '', b.box_qrs || '', b.lines_json || '', b.reason || '', 'Issued']);
+    return { rtn_no: rtnNo, created_at: createdAt };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function returns_() {
+  if (!_ss().getSheetByName('Return_Register')) return { items: [] };
+  var rows = readTab_('Return_Register');
+  var items = rows.map(function (r) {
+    return { rtn_no: str_(r['RTN_No']), created_at: localTs_(r['Created_At']), created_by: str_(r['Created_By']),
+      date: str_(r['Date']), returned_from: str_(r['Returned_From']), returned_to: str_(r['Returned_To']),
+      received_into: str_(r['Received_Into']), carrier: str_(r['Carrier']), received_by: str_(r['Received_By']),
+      truck: str_(r['Truck']), trailer: str_(r['Trailer']), total_packages: num_(r['Total_Packages']),
+      total_quantity: num_(r['Total_Quantity']), total_neq_kg: num_(r['Total_NEQ_kg']),
+      include_neq: /true/i.test(String(r['Include_NEQ'])), classes: str_(r['Classes']),
+      box_qrs: str_(r['Box_QRs']), lines_json: str_(r['Lines_JSON']), reason: str_(r['Reason']), status: str_(r['Status']) };
+  }).filter(function (b) { return b.rtn_no; });
+  return { items: items };
 }
 
 // ── Write-back: amend PO and/or customer on sold boxes ───────────────────────

@@ -183,6 +183,16 @@ export type IssuedBol = {
   signature_url: string;   // captured receiver signature (embedded on reprint)
 };
 
+// An issued Goods Return note, from the Return_Register tab (immutable once
+// written). The inbound twin of IssuedBol — the plant is the consignee here.
+export type IssuedReturn = {
+  rtn_no: string; created_at: string; created_by: string; date: string;
+  returned_from: string; returned_to: string; received_into: string;
+  carrier: string; received_by: string; truck: string; trailer: string;
+  total_packages: number; total_quantity: number; total_neq_kg: number;
+  include_neq: boolean; classes: string; box_qrs: string; lines_json: string; reason: string; status: string;
+};
+
 // A captured receiver signature, from the Signatures tab. Written automatically
 // by the BlastStock scanner app when an operator completes a bulk sale with a
 // signature. Looked up by PO_Number when building a BOL. The Drive_URL serves
@@ -501,6 +511,18 @@ function mapIssuedBol(r: Record<string, string>): IssuedBol {
   };
 }
 
+function mapIssuedReturn(r: Record<string, string>): IssuedReturn {
+  return {
+    rtn_no: r["RTN_No"] ?? "", created_at: r["Created_At"] ?? "", created_by: r["Created_By"] ?? "",
+    date: r["Date"] ?? "", returned_from: r["Returned_From"] ?? "", returned_to: r["Returned_To"] ?? "",
+    received_into: r["Received_Into"] ?? "", carrier: r["Carrier"] ?? "", received_by: r["Received_By"] ?? "",
+    truck: r["Truck"] ?? "", trailer: r["Trailer"] ?? "", total_packages: toNum(r["Total_Packages"]),
+    total_quantity: toNum(r["Total_Quantity"]), total_neq_kg: toNum(r["Total_NEQ_kg"]),
+    include_neq: /true/i.test(r["Include_NEQ"] ?? ""), classes: r["Classes"] ?? "",
+    box_qrs: r["Box_QRs"] ?? "", lines_json: r["Lines_JSON"] ?? "", reason: r["Reason"] ?? "", status: r["Status"] ?? "",
+  };
+}
+
 // Extract a Drive file id from an explicit id field or any Drive URL shape.
 function driveFileId(idField: string, urlField: string): string {
   if (idField && idField.trim()) return idField.trim();
@@ -753,6 +775,22 @@ export const api = {
     try {
       if (MODE === "gviz") return { items: (await gvizTab("BOL_Register")).map(mapIssuedBol).filter((b) => b.bol_no) };
       return await getJson<{ items: IssuedBol[] }>("bols");
+    } catch { return { items: [] }; }
+  },
+
+  // ── Goods Return register (write-back) — same /exec endpoint as the BOL ─────
+  returnEnabled: !!BOL_API,
+  async registerReturn(payload: Record<string, unknown>): Promise<{ rtn_no: string; created_at: string }> {
+    if (!BOL_API) throw new Error("Return register not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "createReturn", ...payload }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
+  async returns(): Promise<{ items: IssuedReturn[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Return_Register")).map(mapIssuedReturn).filter((b) => b.rtn_no) };
+      return await getJson<{ items: IssuedReturn[] }>("returns");
     } catch { return { items: [] }; }
   },
   // Captured receiver signatures (Signatures tab). Tolerate the tab's absence.
