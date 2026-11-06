@@ -283,7 +283,7 @@ export const SITE_ROOMS = ["Magazine M1", "Magazine M2", "Nairn Mags", "Sea Can 
 // and in the monthly export so Production-Floor stock isn't dropped.
 export const RAW_MATERIAL_ROOMS: readonly string[] = [...SITE_ROOMS.flatMap((r) => (r === "Sea Can 6" ? ["Sea Can 5", r] : [r])), "Production Floor"];
 
-export type MatrixRow = { description: string; cells: Record<string, number>; total: number; family: string | null };
+export type MatrixRow = { description: string; packaging_class?: string; cells: Record<string, number>; total: number; family: string | null };
 // Display/sort order for finished-good product families.
 const FAMILY_ORDER = ["MS DUAL", "QS", "SILVER", "TITANIUM"];
 export type MatrixResult = {
@@ -303,32 +303,37 @@ export function inventoryMatrix(items: InventoryItem[], finishedGoods: boolean, 
     (finishedGoods ? i.type === "FINISHED_GOOD" : i.type !== "FINISHED_GOOD") &&
     canonRoom(i.current_location) !== undefined);
 
-  const byDesc = new Map<string, Map<string, number>>();
+  // Finished goods split each description by DG packaging class, so e.g. 1.4S and
+  // 1.1B of the same variant are separate lines and never share a total. Raw
+  // materials stay merged on description alone (no class split requested there).
+  type Group = { description: string; packaging_class: string; family: string | null; cells: Map<string, number> };
+  const byKey = new Map<string, Group>();
   const colTotal = new Map<string, number>();
-  const descFamily = new Map<string, string | null>();
   for (const i of sel) {
     const room = canonRoom(i.current_location)!;
     const desc = i.description || "(no description)";
-    if (!byDesc.has(desc)) { byDesc.set(desc, new Map()); descFamily.set(desc, prodFamily(i)); }
-    const lm = byDesc.get(desc)!;
-    lm.set(room, (lm.get(room) || 0) + i.current_quantity);
+    const cls = finishedGoods ? i.packaging_class.trim() : "";
+    const key = finishedGoods ? `${desc}|||${cls}` : desc;
+    let g = byKey.get(key);
+    if (!g) { g = { description: desc, packaging_class: cls, family: finishedGoods ? prodFamily(i) : null, cells: new Map() }; byKey.set(key, g); }
+    g.cells.set(room, (g.cells.get(room) || 0) + i.current_quantity);
     colTotal.set(room, (colTotal.get(room) || 0) + i.current_quantity);
   }
 
   const locations = rooms.filter((r) => colTotal.has(r));  // only rooms that hold stock, in listed order
 
-  const rows = Array.from(byDesc, ([description, lm]) => {
+  const rows = Array.from(byKey.values(), (g) => {
     const cells: Record<string, number> = {};
     let total = 0;
-    for (const loc of locations) { const q = lm.get(loc) || 0; cells[loc] = q; total += q; }
-    return { description, cells, total, family: finishedGoods ? (descFamily.get(description) ?? null) : null };
+    for (const loc of locations) { const q = g.cells.get(loc) || 0; cells[loc] = q; total += q; }
+    return { description: g.description, packaging_class: g.packaging_class || undefined, cells, total, family: g.family };
   }).filter((r) => r.total !== 0);
 
-  // Finished goods: group by product family (in FAMILY_ORDER) then alphabetically.
-  // Raw materials & other: alphabetical by description.
+  // Finished goods: group by product family (in FAMILY_ORDER), then description,
+  // then DG class. Raw materials & other: alphabetical by description.
   const famRank = (f: string | null) => { const i = f ? FAMILY_ORDER.indexOf(f) : -1; return i === -1 ? FAMILY_ORDER.length : i; };
   rows.sort(finishedGoods
-    ? (a, b) => famRank(a.family) - famRank(b.family) || a.description.localeCompare(b.description)
+    ? (a, b) => famRank(a.family) - famRank(b.family) || a.description.localeCompare(b.description) || (a.packaging_class || "").localeCompare(b.packaging_class || "")
     : (a, b) => a.description.localeCompare(b.description));
 
   const colTotals: Record<string, number> = {};

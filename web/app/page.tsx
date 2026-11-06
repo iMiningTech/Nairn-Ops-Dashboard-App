@@ -1304,8 +1304,11 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 // Shared: CSV export of a pivot matrix.
 function exportMatrix(name: string, data: MatrixResult) {
-  const cols: Col[] = [{ key: "description", label: "Description" }, ...data.locations.map((l) => ({ key: l, label: l })), { key: "__total", label: "Total" }];
-  const rows = data.rows.map((r) => ({ description: r.description, ...r.cells, __total: r.total }));
+  const showClass = data.rows.some((r) => r.packaging_class);
+  const cols: Col[] = [{ key: "description", label: "Description" },
+    ...(showClass ? [{ key: "packaging_class", label: "Class" }] : []),
+    ...data.locations.map((l) => ({ key: l, label: l })), { key: "__total", label: "Total" }];
+  const rows = data.rows.map((r) => ({ description: r.description, packaging_class: r.packaging_class || "", ...r.cells, __total: r.total }));
   csvDownload(name, cols, rows);
 }
 function MatrixHeader({ data, onExport }: { data: MatrixResult; onExport: () => void }) {
@@ -1700,7 +1703,7 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
               <span key={fam} className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: col }} /> {fam}</span>
             ))}
           </div>
-          <div className="text-xs text-muted">{filtered.rows.length} of {data.rows.length} descriptions · <span className="font-semibold text-fg">{fmtNum(filtered.grandTotal)}</span> units</div>
+          <div className="text-xs text-muted">{filtered.rows.length} of {data.rows.length} lines · <span className="font-semibold text-fg">{fmtNum(filtered.grandTotal)}</span> units</div>
         </div>
         <MatrixTable data={filtered} familyColours={FAMILY_COLOURS} maxH="78vh" />
       </CardBody></Card>
@@ -2053,12 +2056,16 @@ function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResu
   const { locations, rows, colTotals, grandTotal } = data;
   if (!rows.length) return <div className="py-12 text-center text-sm text-muted">No stock for this category.</div>;
   const cell = (n: number) => (n ? fmtNum(n) : "—");
+  // Finished-goods rows are split by DG class — show a tight Class column so the
+  // split is visible (and so same-variant/different-class lines don't look dup'd).
+  const showClass = rows.some((r) => r.packaging_class);
   return (
     <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: maxH }}>
       <table className="w-full text-sm">
         <thead className="sticky top-0 z-10 bg-bg text-xs uppercase tracking-wide text-muted">
           <tr>
             <th className="sticky left-0 z-20 bg-bg px-3 py-2 text-left font-medium">Description</th>
+            {showClass && <th className="whitespace-nowrap px-2 py-2 text-left font-medium">Class</th>}
             {locations.map((l) => <th key={l} className="whitespace-nowrap px-3 py-2 text-right font-medium">{l}</th>)}
             <th className="px-3 py-2 text-right font-semibold text-fg">Total</th>
           </tr>
@@ -2073,6 +2080,9 @@ function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResu
                   style={{ background: bg || "rgb(var(--surface))", borderLeft: col ? `3px solid ${col}` : undefined }}>
                   {r.description}
                 </td>
+                {showClass && <td className="whitespace-nowrap px-2 py-2">{r.packaging_class
+                  ? <span className="rounded border border-accent px-1 text-[10px] font-bold text-accent">{r.packaging_class}</span>
+                  : <span className="text-muted">—</span>}</td>}
                 {locations.map((l) => <td key={l} className="px-3 py-2 text-right tabular-nums text-muted">{cell(r.cells[l])}</td>)}
                 <td className="px-3 py-2 text-right font-semibold tabular-nums text-fg">{fmtNum(r.total)}</td>
               </tr>
@@ -2082,6 +2092,7 @@ function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResu
         <tfoot className="sticky bottom-0 bg-bg">
           <tr className="border-t-2 border-border">
             <td className="sticky left-0 z-10 bg-bg px-3 py-2 font-semibold text-fg">Total on site</td>
+            {showClass && <td className="bg-bg px-2 py-2" />}
             {locations.map((l) => <td key={l} className="px-3 py-2 text-right font-semibold tabular-nums text-fg">{fmtNum(colTotals[l])}</td>)}
             <td className="px-3 py-2 text-right font-bold tabular-nums text-fg">{fmtNum(grandTotal)}</td>
           </tr>
