@@ -2059,6 +2059,13 @@ function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResu
   // Finished-goods rows are split by DG class — show a tight Class column so the
   // split is visible (and so same-variant/different-class lines don't look dup'd).
   const showClass = rows.some((r) => r.packaging_class);
+  // Colour the badge by hazard division: 1.1B (mass explosion) = red, 1.4B =
+  // amber, 1.4S (safest) = green. Anything else stays neutral.
+  const classBadge = (c: string) =>
+    c === "1.1B" ? "border-danger text-danger bg-danger/10"
+    : c === "1.4B" ? "border-warn text-warn bg-warn/10"
+    : c === "1.4S" ? "border-ok text-ok bg-ok/10"
+    : "border-border text-muted";
   return (
     <div className="overflow-auto rounded-xl border border-border" style={{ maxHeight: maxH }}>
       <table className="w-full text-sm">
@@ -2081,7 +2088,7 @@ function MatrixTable({ data, familyColours, maxH = "38rem" }: { data: MatrixResu
                   {r.description}
                 </td>
                 {showClass && <td className="whitespace-nowrap px-2 py-2">{r.packaging_class
-                  ? <span className="rounded border border-accent px-1 text-[10px] font-bold text-accent">{r.packaging_class}</span>
+                  ? <span className={`rounded border px-1 text-[10px] font-bold ${classBadge(r.packaging_class)}`}>{r.packaging_class}</span>
                   : <span className="text-muted">—</span>}</td>}
                 {locations.map((l) => <td key={l} className="px-3 py-2 text-right tabular-nums text-muted">{cell(r.cells[l])}</td>)}
                 <td className="px-3 py-2 text-right font-semibold tabular-nums text-fg">{fmtNum(r.total)}</td>
