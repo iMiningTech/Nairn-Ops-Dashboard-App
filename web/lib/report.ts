@@ -14,7 +14,7 @@ import type { InventoryItem, Transaction, User, DailyTarget, QcCheck, Decon, Bat
 import { fmtNum, fmtMins, fmtClock, shortDay, fmtDate, fmtTime, dateKey } from "@/lib/utils";
 import {
   monthTotals, productionByDay, productionVariants, startDeadtimeByDay,
-  inventoryMatrix, agedFinishedGoods, lowStock, SITE_ROOMS, RAW_MATERIAL_ROOMS, PROD_FAMILIES, type MatrixResult,
+  inventoryMatrix, agedFinishedGoods, lowStock, SITE_ROOMS, RAW_MATERIAL_ROOMS, RAW_LOCATION_ALIASES, PROD_FAMILIES, type MatrixResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers } from "@/lib/operators";
 import { qcSummary, logDayKey } from "@/lib/logs";
@@ -317,7 +317,7 @@ export function buildMonthlyReport(inp: ReportInput): string {
   P(matrixTable(fg));
 
   P(`### Raw materials on hand — by location`);
-  P(matrixTable(inventoryMatrix(items, false, RAW_MATERIAL_ROOMS)));
+  P(matrixTable(inventoryMatrix(items, false, RAW_MATERIAL_ROOMS, RAW_LOCATION_ALIASES)));
 
   P(`### Low material alerts`);
   const low = lowStock(items);

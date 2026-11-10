@@ -20,7 +20,7 @@ import { explosivesBalance, componentDailyLedger, type ClassBalance, type Compon
 import {
   todaysRecords, productionByDay, printedOn, movedToMagazinesOn,
   lowStock, shiftTimeline, lastT1Destruction, startDeadtimeByDay, monthTotals,
-  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, RAW_MATERIAL_ROOMS, PROD_FAMILIES,
+  inventoryMatrix, agedFinishedGoods, productionVariants, financialMatrix, SITE_ROOMS, RAW_MATERIAL_ROOMS, RAW_LOCATION_ALIASES, PROD_FAMILIES,
   type LineRecord, type ShiftInfo, type MatrixResult, type AgedBox, type FinResult,
 } from "@/lib/production";
 import { operatorStats, inactiveRosterUsers, type OperatorStat } from "@/lib/operators";
@@ -1326,7 +1326,7 @@ function MatrixHeader({ data, onExport }: { data: MatrixResult; onExport: () => 
 // RAW_MATERIAL_ROOMS is defined in lib/production.ts (imported) so the dashboard
 // and the monthly export show the same locations (incl. Production Floor).
 function RawMaterialsView({ items }: { items: InventoryItem[] }) {
-  const data = useMemo(() => inventoryMatrix(items, false, RAW_MATERIAL_ROOMS), [items]);
+  const data = useMemo(() => inventoryMatrix(items, false, RAW_MATERIAL_ROOMS, RAW_LOCATION_ALIASES), [items]);
   return (
     <Card><CardBody>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

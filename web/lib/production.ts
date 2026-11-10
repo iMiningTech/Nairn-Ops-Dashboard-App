@@ -278,10 +278,16 @@ export function lastT1Destruction(txns: Transaction[]): T1Destruction {
 // Active stock only.
 export const SITE_ROOMS = ["Magazine M1", "Magazine M2", "Nairn Mags", "Sea Can 6", "Sea Can 7", "Component Room", "Warehouse Room 17", "E-board Room", "DAB-16A", "NDT Room"] as const;
 
-// Raw materials / components also live on the Production Floor and in Sea Can 5
-// (inserted before Sea Can 6). Used for the Raw Materials matrix on the dashboard
-// and in the monthly export so Production-Floor stock isn't dropped.
-export const RAW_MATERIAL_ROOMS: readonly string[] = [...SITE_ROOMS.flatMap((r) => (r === "Sea Can 6" ? ["Sea Can 5", r] : [r])), "Production Floor"];
+// Raw materials / components also live on the Production Floor and in the sea
+// cans (inserted before Sea Can 6). Used for the Raw Materials matrix on the
+// dashboard and in the monthly export so Production-Floor stock isn't dropped.
+// Sea Can 4 and Sea Can 5 both hold very little, so they share one "Sea Can 4/5"
+// column (see RAW_LOCATION_ALIASES) rather than wasting a column each.
+export const RAW_MATERIAL_ROOMS: readonly string[] = [...SITE_ROOMS.flatMap((r) => (r === "Sea Can 6" ? ["Sea Can 4/5", r] : [r])), "Production Floor"];
+
+// Physical locations folded into one matrix column. Passed to inventoryMatrix as
+// its `aliases` so both Sea Can 4 and Sea Can 5 stock land in "Sea Can 4/5".
+export const RAW_LOCATION_ALIASES: Record<string, string> = { "Sea Can 4": "Sea Can 4/5", "Sea Can 5": "Sea Can 4/5" };
 
 export type MatrixRow = { description: string; packaging_class?: string; cells: Record<string, number>; total: number; family: string | null };
 // Display/sort order for finished-good product families.
@@ -293,10 +299,15 @@ export type MatrixResult = {
   grandTotal: number;
 };
 
-export function inventoryMatrix(items: InventoryItem[], finishedGoods: boolean, rooms: readonly string[]): MatrixResult {
+export function inventoryMatrix(items: InventoryItem[], finishedGoods: boolean, rooms: readonly string[], aliases?: Record<string, string>): MatrixResult {
   const norm = (s: string) => s.trim().toLowerCase();
+  // Optional alias map folds several physical locations into one column (e.g.
+  // Sea Can 4 + Sea Can 5 → "Sea Can 4/5"): a location is remapped before it's
+  // matched to a shown room, so both feed the same column total.
+  const aliasByNorm = aliases ? new Map(Object.entries(aliases).map(([k, v]) => [norm(k), v])) : null;
+  const foldLoc = (loc: string) => aliasByNorm?.get(norm(loc)) ?? loc;
   // Map a location to its canonical room name, or undefined if not a shown room.
-  const canonRoom = (loc: string) => rooms.find((r) => norm(r) === norm(loc));
+  const canonRoom = (loc: string) => { const l = foldLoc(loc); return rooms.find((r) => norm(r) === norm(l)); };
 
   const sel = items.filter((i) =>
     i.status === "Active" &&
