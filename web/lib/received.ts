@@ -15,7 +15,7 @@ export type ReceivedRow = {
   manufacturer: string;
   financial_no: string;
   boxes: number;        // number of labelled packages (QRs) received that day
-  quantity: number;     // units received (original box quantity)
+  quantity: number;     // units on hand (current box quantity — matches inventory)
 };
 
 export type ReceivedDay = {
@@ -71,7 +71,11 @@ export function indexReceived(
       dayMap.set(key, row);
     }
     row.boxes += 1;
-    row.quantity += item.original_quantity || item.current_quantity || 0;
+    // Current_Quantity, not Original_Quantity: raw-material boxes are labelled from
+    // a template (e.g. 5400) and then reconciled to the real contents (e.g. 1800)
+    // via a QUANTITY_CHANGE, so Original is the inflated template. Current matches
+    // what the Raw Materials / inventory on-hand shows.
+    row.quantity += item.current_quantity || 0;
     if (!row.manufacturer && item.manufacturer) row.manufacturer = item.manufacturer;
     if (!row.financial_no && item.financial_no) row.financial_no = item.financial_no;
   }
