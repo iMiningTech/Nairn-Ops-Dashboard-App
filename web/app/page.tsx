@@ -33,6 +33,7 @@ import { awaitingDestruction, destroyedInRange, wasteInRange, consolidateDestroy
 import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
 import { ReturnsView } from "@/components/returns-view";
+import { ReceivedView } from "@/components/received-view";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz, dateKey } from "@/lib/utils";
 
@@ -47,6 +48,7 @@ const VIEWS = [
   { id: "breakdowns", label: "Breakdowns", icon: WrenchIcon },
   { id: "finished", label: "Finished Goods", icon: Boxes },
   { id: "rawmaterials", label: "Raw Materials", icon: Package },
+  { id: "received", label: "Received", icon: PackageCheck },
   { id: "financial", label: "Financial Lookup", icon: Hash },
   { id: "destruction", label: "Destruction & Waste", icon: Trash2 },
   { id: "sales", label: "Sales History", icon: Receipt },
@@ -290,6 +292,7 @@ export default function Dashboard() {
               {view === "breakdowns" && <BreakdownsView tickets={tickets} events={ticketEvents} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} />}
               {view === "finished" && <FinishedGoodsView items={items} customer={role === "fg"} />}
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
+              {view === "received" && <ReceivedView items={items} txns={txns} />}
               {view === "financial" && <FinancialLookupView items={items} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} onNavigate={setView} />}
