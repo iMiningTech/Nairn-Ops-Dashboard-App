@@ -32,9 +32,11 @@
  * raw-ish shapes.
  */
 
-// Leave blank if this script is BOUND to the spreadsheet (Extensions → Apps
-// Script). Set to the spreadsheet id only if running it as a standalone script.
-var SHEET_ID = '';
+// The master "BlastStock" spreadsheet. Hardcoded so this works as a standalone
+// script and survives re-paste (if BOUND to the sheet via Extensions → Apps
+// Script it would be optional, but keeping the id here means it never needs
+// re-setting). This is the "Nairn Det Plant Inventory Labels" / BlastStock sheet.
+var SHEET_ID = '15eiq1d-w5av0JIf1u_x4kPAhUiDU_wJIMd3JgmQOxPM';
 
 // Optional shared-secret. If non-empty, requests must include &token=THIS_VALUE
 // (the web app sets NEXT_PUBLIC_API_TOKEN to match). Blank = no token check.
