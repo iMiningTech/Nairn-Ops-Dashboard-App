@@ -751,6 +751,16 @@ export const api = {
     if (j.error) throw new Error(j.error);
     return j;
   },
+  // Void an issued BOL (e.g. a mistaken duplicate). Marks its register row Status
+  // 'Void' — the row is kept for audit but drops out of the dashboard and stops
+  // locking its boxes. Needs the Apps Script (voidBol action) deployed.
+  async voidBol(bolNo: string, by?: string): Promise<{ bol_no: string; status: string }> {
+    if (!BOL_API) throw new Error("BOL register not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "voidBol", bol_no: bolNo, voided_by: by ?? "" }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
   // Amend the PO number and/or customer on one or more sold boxes (manager
   // correction from the dashboard). Writes to Inventory_Master and appends an
   // audited PO_UPDATE / CUSTOMER_UPDATE transaction per changed field. Empty

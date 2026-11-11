@@ -72,6 +72,7 @@ function doPost(e) {
     var body = {};
     try { body = JSON.parse(e.postData.contents); } catch (_) { return _json({ error: 'bad request body' }); }
     if (body.action === 'createBol') return _json(createBol_(body));
+    if (body.action === 'voidBol') return _json(voidBol_(body));
     if (body.action === 'createReturn') return _json(createReturn_(body));
     if (body.action === 'updatePo' || body.action === 'amendSale') return _json(amendSale_(body));
     if (body.action === 'setTicketStation') return _json(setTicketStation_(body));
@@ -94,8 +95,34 @@ function createBol_(b) {
     if (!sh) { sh = ss.insertSheet('BOL_Register'); sh.appendRow(BOL_HEADERS); }
     var tz = ss.getSpreadsheetTimeZone();
     var year = Utilities.formatDate(new Date(), tz, 'yyyy');
-    // Next sequence for this year.
     var data = sh.getDataRange().getValues();
+
+    // Duplicate guard. The dashboard hides boxes already on a BOL, but that check
+    // runs on a read that lags by minutes (and a second browser tab never sees the
+    // first issue at all), so the same load can be registered twice — which is how
+    // BOL-2026-0017/0018 both got the identical 70 boxes on 6 Nov. Only this server,
+    // reading the register live under the lock, can reliably stop it. Reject when
+    // every incoming box already sits on a single still-live (Issued) BOL — i.e. a
+    // re-registration of the same load. A genuine re-ship (new boxes mixed in, or a
+    // returned box) is not a subset of one prior BOL, so it still goes through.
+    var qrCol = BOL_HEADERS.indexOf('Box_QRs');
+    var statusCol = BOL_HEADERS.indexOf('Status');
+    var incoming = String(b.box_qrs || '').split(',').map(function (s) { return s.trim(); }).filter(String);
+    if (incoming.length) {
+      for (var g = 1; g < data.length; g++) {
+        if (String(data[g][statusCol] || '').toLowerCase() !== 'issued') continue;
+        var existSet = {};
+        String(data[g][qrCol] || '').split(',').forEach(function (q) { existSet[q.trim()] = true; });
+        var allPresent = incoming.every(function (q) { return existSet[q]; });
+        if (allPresent) {
+          return { error: 'These ' + incoming.length + ' box(es) are already on ' + String(data[g][0]) +
+            ' (issued ' + String(data[g][1]) + '). No new BOL was created — reprint ' + String(data[g][0]) +
+            ', or void it first if it was a mistake.', duplicate_of: String(data[g][0]) };
+        }
+      }
+    }
+
+    // Next sequence for this year.
     var max = 0, re = new RegExp('^BOL-' + year + '-(\\d+)$');
     for (var i = 1; i < data.length; i++) {
       var m = String(data[i][0] || '').match(re);
@@ -108,6 +135,34 @@ function createBol_(b) {
       b.total_packages || 0, b.total_quantity || 0, b.total_neq_kg || 0, b.include_neq ? 'TRUE' : 'FALSE',
       b.classes || '', b.box_qrs || '', b.lines_json || '', 'Issued', b.signature_url || '']);
     return { bol_no: bolNo, created_at: createdAt };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Void a BOL — mark an issued row's Status as 'Void' (never deletes the row, so the
+// sequential register keeps its audit trail). Used to kill a mistaken duplicate
+// like BOL-2026-0017. Once voided it drops out of the dashboard and no longer locks
+// its boxes, so the real load can be re-registered if needed.
+function voidBol_(b) {
+  var no = String(b.bol_no || '').trim();
+  if (!no) return { error: 'bol_no required' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = _ss();
+    var sh = ss.getSheetByName('BOL_Register');
+    if (!sh) return { error: 'no BOL register' };
+    var data = sh.getDataRange().getValues();
+    var statusCol = BOL_HEADERS.indexOf('Status');
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim() === no) {
+        if (String(data[i][statusCol] || '').toLowerCase() === 'void') return { bol_no: no, status: 'Void', already: true };
+        sh.getRange(i + 1, statusCol + 1).setValue('Void');
+        return { bol_no: no, status: 'Void' };
+      }
+    }
+    return { error: 'BOL ' + no + ' not found' };
   } finally {
     lock.releaseLock();
   }

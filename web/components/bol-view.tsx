@@ -48,10 +48,20 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
     return Array.from(m, ([customer, boxes]) => ({ customer, boxes }));
   }, [eligible]);
 
-  // Issued-BOL history + which box QRs are already on a BOL.
+  // Issued-BOL history + which box QRs are already on a BOL. Voided BOLs (a
+  // mistaken duplicate that was killed) are dropped — they neither show in the
+  // list nor lock their boxes.
   const [history, setHistory] = useState<IssuedBol[]>([]);
-  const loadHistory = () => api.bols().then((r) => setHistory(r.items)).catch(() => {});
+  const loadHistory = () => api.bols().then((r) => setHistory(r.items.filter((b) => b.status.toLowerCase() !== "void"))).catch(() => {});
   useEffect(() => { loadHistory(); }, []);
+  const [voiding, setVoiding] = useState<string | null>(null);
+  async function voidBol(r: IssuedBol) {
+    if (!window.confirm(`Void ${r.bol_no}? It will be removed from the dashboard and its ${r.total_packages} box(es) freed. The register row is kept (marked Void) for audit.`)) return;
+    setVoiding(r.bol_no);
+    try { await api.voidBol(r.bol_no); await loadHistory(); }
+    catch (e) { window.alert(e instanceof Error ? e.message : String(e)); }
+    finally { setVoiding(null); }
+  }
   const usedQr = useMemo(() => {
     const m = new Map<string, string>();
     for (const b of history) b.box_qrs.split(",").map((s) => s.trim()).filter(Boolean).forEach((qr) => m.set(qr, b.bol_no));
@@ -504,8 +514,14 @@ export function BolView({ items, txns }: { items: InventoryItem[]; txns: Transac
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.total_packages)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.total_quantity)}</td>
                     <td className="px-3 py-2">{r.classes}</td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
                       <button onClick={() => reprint(r)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs hover:bg-bg"><RotateCcw size={13} /> Reprint</button>
+                      {api.bolEnabled && (
+                        <button onClick={() => voidBol(r)} disabled={voiding === r.bol_no}
+                          className="ml-2 inline-flex items-center gap-1 rounded-lg border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50">
+                          <X size={13} /> {voiding === r.bol_no ? "Voiding…" : "Void"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
