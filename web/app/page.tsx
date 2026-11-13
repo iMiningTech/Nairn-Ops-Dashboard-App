@@ -1605,8 +1605,44 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
     { key: "location", label: "Location" }, { key: "qty", label: "Qty", num: true, fmt: fmtQty },
   ];
 
+  const onHandByLocation = (
+    <Card><CardBody>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm font-semibold text-fg">Finished goods on hand — by location</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted">What are you looking for?</span>
+          <select value={pt} onChange={(e) => setPt(e.target.value)}
+            className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent">
+            <option value="all">All product types</option>
+            {["MS DUAL", "QS", "SILVER", "TITANIUM"].map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="length or delay — e.g. 12.0m, 25 / 500"
+              className="w-64 rounded-lg border border-border bg-bg py-1.5 pl-8 pr-3 text-sm outline-none focus:border-accent" />
+          </div>
+          <button onClick={() => exportMatrix(`finished_goods_${today()}.csv`, filtered)}
+            className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
+        </div>
+      </div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {Object.entries(FAMILY_COLOURS).map(([fam, col]) => (
+            <span key={fam} className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: col }} /> {fam}</span>
+          ))}
+        </div>
+        <div className="text-xs text-muted">{filtered.rows.length} of {data.rows.length} lines · <span className="font-semibold text-fg">{fmtNum(filtered.grandTotal)}</span> units</div>
+      </div>
+      <MatrixTable data={filtered} familyColours={FAMILY_COLOURS} maxH="78vh" />
+    </CardBody></Card>
+  );
+
   return (
     <>
+      {/* On-hand by location goes first so the customer (FG-only) role sees sellable
+          stock immediately; internal alerts/holding follow below. */}
+      {onHandByLocation}
+
       {/* Shelf-age alerts are an internal/ops concern — hidden from the customer (FG-only) role. */}
       {!customer && (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -1680,36 +1716,6 @@ function FinishedGoodsView({ items, customer }: { items: InventoryItem[]; custom
           ))}
         </CardBody></Card>
       )}
-
-      <Card><CardBody>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-sm font-semibold text-fg">Finished goods on hand — by location</div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">What are you looking for?</span>
-            <select value={pt} onChange={(e) => setPt(e.target.value)}
-              className="rounded-lg border border-border bg-bg px-2 py-1.5 text-sm outline-none focus:border-accent">
-              <option value="all">All product types</option>
-              {["MS DUAL", "QS", "SILVER", "TITANIUM"].map((f) => <option key={f} value={f}>{f}</option>)}
-            </select>
-            <div className="relative">
-              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="length or delay — e.g. 12.0m, 25 / 500"
-                className="w-64 rounded-lg border border-border bg-bg py-1.5 pl-8 pr-3 text-sm outline-none focus:border-accent" />
-            </div>
-            <button onClick={() => exportMatrix(`finished_goods_${today()}.csv`, filtered)}
-              className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-bg"><Download size={14} /> CSV</button>
-          </div>
-        </div>
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-            {Object.entries(FAMILY_COLOURS).map(([fam, col]) => (
-              <span key={fam} className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: col }} /> {fam}</span>
-            ))}
-          </div>
-          <div className="text-xs text-muted">{filtered.rows.length} of {data.rows.length} lines · <span className="font-semibold text-fg">{fmtNum(filtered.grandTotal)}</span> units</div>
-        </div>
-        <MatrixTable data={filtered} familyColours={FAMILY_COLOURS} maxH="78vh" />
-      </CardBody></Card>
     </>
   );
 }
