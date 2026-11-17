@@ -34,6 +34,7 @@ import { buildMonthlyReport } from "@/lib/report";
 import { BolView } from "@/components/bol-view";
 import { ReturnsView } from "@/components/returns-view";
 import { ReceivedView } from "@/components/received-view";
+import { SnapshotsView } from "@/components/snapshots-view";
 import { TYPE_COLOURS } from "@/lib/colors";
 import { fmtTime, fmtDate, fmtNum, todayKey, dayKeyOffset, shortDay, fmtMins, fmtClock, nowMinutesInTz, dateKey } from "@/lib/utils";
 
@@ -57,6 +58,7 @@ const VIEWS = [
   { id: "recon", label: "Reconciliation", icon: Scale },
   { id: "maint", label: "Maintenance Stores", icon: Wrench },
   { id: "capabilities", label: "Capabilities", icon: BookOpen },
+  { id: "snapshots", label: "Snapshots", icon: ShieldCheck },
 ] as const;
 type ViewId = (typeof VIEWS)[number]["id"];
 
@@ -301,6 +303,7 @@ export default function Dashboard() {
               {view === "recon" && <ReconView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "maint" && <MaintenanceView items={items} />}
               {view === "capabilities" && <CapabilitiesView items={items} lengths={lengths} reference={reference} capabilities={capabilities} />}
+              {view === "snapshots" && <SnapshotsView />}
             </div>
           )}
         </main>

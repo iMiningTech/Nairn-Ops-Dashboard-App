@@ -193,6 +193,15 @@ export type IssuedReturn = {
   include_neq: boolean; classes: string; box_qrs: string; lines_json: string; reason: string; status: string;
 };
 
+// One month-end inventory snapshot, from the Inventory_Snapshots manifest. An
+// append-only, hash-chained audit record; the frozen per-box detail lives in the
+// Detail_Tab (downloaded via api.snapshotCsv).
+export type Snapshot = {
+  snapshot_id: string; period: string; captured_at: string; captured_by: string;
+  reconciled: boolean; trigger: string; scope: string; item_count: number; total_quantity: number;
+  class_breakdown: string; detail_tab: string; sha256: string; prev_chain: string; chain: string;
+};
+
 // A captured receiver signature, from the Signatures tab. Written automatically
 // by the BlastStock scanner app when an operator completes a bulk sale with a
 // signature. Looked up by PO_Number when building a BOL. The Drive_URL serves
@@ -523,6 +532,16 @@ function mapIssuedReturn(r: Record<string, string>): IssuedReturn {
   };
 }
 
+function mapSnapshot(r: Record<string, string>): Snapshot {
+  return {
+    snapshot_id: r["Snapshot_ID"] ?? "", period: r["Period"] ?? "", captured_at: r["Captured_At"] ?? "",
+    captured_by: r["Captured_By"] ?? "", reconciled: /true/i.test(r["Reconciled"] ?? ""), trigger: r["Trigger"] ?? "",
+    scope: r["Scope"] ?? "", item_count: toNum(r["Item_Count"]), total_quantity: toNum(r["Total_Quantity"]),
+    class_breakdown: r["Class_Breakdown"] ?? "", detail_tab: r["Detail_Tab"] ?? "", sha256: r["SHA256"] ?? "",
+    prev_chain: r["Prev_Chain"] ?? "", chain: r["Chain"] ?? "",
+  };
+}
+
 // Extract a Drive file id from an explicit id field or any Drive URL shape.
 function driveFileId(idField: string, urlField: string): string {
   if (idField && idField.trim()) return idField.trim();
@@ -802,6 +821,35 @@ export const api = {
       if (MODE === "gviz") return { items: (await gvizTab("Return_Register")).map(mapIssuedReturn).filter((b) => b.rtn_no) };
       return await getJson<{ items: IssuedReturn[] }>("returns");
     } catch { return { items: [] }; }
+  },
+
+  // ── Month-end inventory snapshots (audit record, write-back) ───────────────
+  snapshotEnabled: !!BOL_API,
+  async snapshots(): Promise<{ items: Snapshot[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Inventory_Snapshots")).map(mapSnapshot).filter((s) => s.snapshot_id) };
+      return await getJson<{ items: Snapshot[] }>("snapshots");
+    } catch { return { items: [] }; }
+  },
+  async createSnapshot(payload: { captured_by?: string; period?: string }): Promise<{ snapshot_id: string; period: string; item_count: number; total_quantity: number; sha256: string }> {
+    if (!BOL_API) throw new Error("Snapshots not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "createSnapshot", trigger: "button", ...payload }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
+  // Fetch a snapshot's frozen detail as canonical CSV + the server's SHA-256 of it.
+  // Built server-side with the same routine used at capture, so a clean snapshot's
+  // recomputed hash equals the stored one.
+  async snapshotCsv(tab: string): Promise<{ csv: string; sha256: string }> {
+    const base = API_BASE || BOL_API;
+    if (!base) throw new Error("Snapshot download needs the live API (set NEXT_PUBLIC_API_BASE).");
+    const qs = new URLSearchParams({ action: "snapshotCsv", tab });
+    if (API_TOKEN) qs.set("token", API_TOKEN);
+    const res = await fetch(`${base}?${qs.toString()}`, { cache: "no-store" });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return { csv: j.csv, sha256: j.sha256 };
   },
   // Captured receiver signatures (Signatures tab). Tolerate the tab's absence.
   async signatures(): Promise<{ items: Signature[] }> {

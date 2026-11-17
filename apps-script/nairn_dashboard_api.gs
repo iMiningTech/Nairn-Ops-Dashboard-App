@@ -59,7 +59,9 @@ function doGet(e) {
       case 'bols':          return _json(bols_());
       case 'returns':       return _json(returns_());
       case 'signatures':    return _json(signatures_());
-      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'returns', 'signatures'] });
+      case 'snapshots':     return _json(snapshots_());
+      case 'snapshotCsv':   return _json(snapshotCsv_(params.tab));
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'returns', 'signatures', 'snapshots', 'snapshotCsv'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -75,6 +77,7 @@ function doPost(e) {
     try { body = JSON.parse(e.postData.contents); } catch (_) { return _json({ error: 'bad request body' }); }
     if (body.action === 'createBol') return _json(createBol_(body));
     if (body.action === 'voidBol') return _json(voidBol_(body));
+    if (body.action === 'createSnapshot') return _json(createSnapshot_(body));
     if (body.action === 'createReturn') return _json(createReturn_(body));
     if (body.action === 'updatePo' || body.action === 'amendSale') return _json(amendSale_(body));
     if (body.action === 'setTicketStation') return _json(setTicketStation_(body));
@@ -168,6 +171,170 @@ function voidBol_(b) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ── Month-end inventory snapshots (immutable audit record) ───────────────────
+// An append-only, hash-chained record of inventory at a point in time, for an
+// external audit trail. Captured SERVER-SIDE straight from Inventory_Master (not
+// from client-sent data) so the record reflects the source of truth.
+//
+// Two tabs:
+//   Inventory_Snapshots  — the manifest: one row per snapshot, with a SHA-256 of
+//                          the frozen detail and a running chain hash. Editing,
+//                          inserting, deleting or reordering any past snapshot
+//                          breaks the chain, so tampering is provable.
+//   SNAP_<period>         — the frozen per-box detail for that snapshot (one tab
+//                          each), downloadable from the dashboard.
+//
+// NOTE: a Google Sheet is still editable by an owner — the chain makes changes
+// DETECTABLE, not impossible. True write-once (WORM) comes when snapshots move to
+// S3 object-lock under the AWS plan. See [[nairn-dashboard-architecture]].
+var SNAP_MANIFEST = 'Inventory_Snapshots';
+var SNAP_HEADERS = ['Snapshot_ID', 'Period', 'Captured_At', 'Captured_By', 'Reconciled', 'Trigger',
+  'Scope', 'Item_Count', 'Total_Quantity', 'Class_Breakdown', 'Detail_Tab', 'SHA256', 'Prev_Chain', 'Chain'];
+var SNAP_DETAIL_HEADERS = ['QR', 'Description', 'Type', 'Packaging_Class', 'Current_Quantity', 'Original_Quantity',
+  'Current_Location', 'Current_Sub_Location', 'Status', 'Financial_No', 'ProdDate', 'Manufacturer', 'Customer', 'PO_Number'];
+
+function _sha256(s) {
+  var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8);
+  return raw.map(function (b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+}
+
+// Deterministic CSV (same routine used at capture AND at verify, so a clean
+// snapshot re-hashes to the stored SHA256).
+function _snapCsv(rows) {
+  return rows.map(function (r) {
+    return r.map(function (v) {
+      var s = (v == null) ? '' : String(v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(',');
+  }).join('\n');
+}
+
+// Capture the current Active inventory as a frozen, hash-chained snapshot.
+//   POST {action:'createSnapshot', captured_by:'JJ', period:'2026-11'?, trigger:'button'|'auto'?}
+function createSnapshot_(b) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(60000);   // a full capture can take a few seconds
+  try {
+    var ss = _ss();
+    var tz = ss.getSpreadsheetTimeZone();
+    var now = new Date();
+    var trigger = (b.trigger === 'auto') ? 'auto' : 'button';
+    var reconciled = (trigger === 'button');   // button = a human reconciliation sign-off
+    var period = b.period ? String(b.period).trim() : Utilities.formatDate(now, tz, 'yyyy-MM');
+    var capturedBy = String(b.captured_by || (trigger === 'auto' ? 'system (auto)' : 'dashboard')).trim();
+
+    var inv = ss.getSheetByName('Inventory_Master');
+    if (!inv) return { error: 'Inventory_Master not found' };
+    var data = inv.getDataRange().getValues();
+    var head = data[0].map(function (h) { return String(h).trim(); });
+    var idx = {}; head.forEach(function (h, i) { idx[h] = i; });
+    function v(row, name) { var i = idx[name]; return (i == null || i < 0) ? '' : row[i]; }
+    var cStatus = idx['Status'];
+
+    // Every Active (on-site) box, all types.
+    var detail = [], totalQty = 0, classBreak = {};
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (String(row[cStatus] || '').trim() !== 'Active') continue;
+      var cq = Number(String(v(row, 'Current_Quantity')).replace(/[, ]/g, '')) || 0;
+      var cls = String(v(row, 'Packaging_Class') || '').trim() || '(none)';
+      totalQty += cq;
+      classBreak[cls] = (classBreak[cls] || 0) + cq;
+      detail.push([
+        String(v(row, 'QR')), String(v(row, 'Description')), String(v(row, 'Type')), cls,
+        cq, Number(String(v(row, 'Original_Quantity')).replace(/[, ]/g, '')) || 0,
+        String(v(row, 'Current_Location')), String(v(row, 'Current_Sub_Location')), String(v(row, 'Status')),
+        String(v(row, 'Financial_No')), String(v(row, 'ProdDate_Formatted')), String(v(row, 'Manufacturer')),
+        String(v(row, 'Customer')), String(v(row, 'PO_Number'))
+      ]);
+    }
+    // Sort by QR so the serialisation (and its hash) is deterministic.
+    detail.sort(function (a, b) { return String(a[0]).localeCompare(String(b[0])); });
+
+    var sha = _sha256(_snapCsv([SNAP_DETAIL_HEADERS].concat(detail)));
+
+    // Manifest: version within the period, and the previous chain value.
+    var man = ss.getSheetByName(SNAP_MANIFEST);
+    if (!man) { man = ss.insertSheet(SNAP_MANIFEST); man.appendRow(SNAP_HEADERS); }
+    var mdata = man.getDataRange().getValues();
+    var chainCol = SNAP_HEADERS.indexOf('Chain');
+    var prevChain = mdata.length > 1 ? String(mdata[mdata.length - 1][chainCol] || '') : '';
+    var seen = 0;
+    for (var r = 1; r < mdata.length; r++) { if (String(mdata[r][1]).trim() === period) seen++; }
+    var suffix = seen ? ('-v' + (seen + 1)) : '';
+    var id = 'SNAP-' + period + suffix;
+    var detailTab = 'SNAP_' + period + suffix;
+    var chain = _sha256(prevChain + '|' + id + '|' + sha + '|' + period + '|' + capturedBy + '|' + detail.length);
+
+    // Frozen detail tab.
+    if (ss.getSheetByName(detailTab)) ss.deleteSheet(ss.getSheetByName(detailTab)); // only if an aborted prior attempt left one
+    var dsh = ss.insertSheet(detailTab);
+    dsh.appendRow(SNAP_DETAIL_HEADERS);
+    if (detail.length) dsh.getRange(2, 1, detail.length, SNAP_DETAIL_HEADERS.length).setValues(detail);
+    try { dsh.protect().setDescription('Immutable inventory snapshot ' + id).setWarningOnly(true); } catch (e) {}
+
+    man.appendRow([id, period, Utilities.formatDate(now, tz, 'M/d/yyyy H:mm:ss'), capturedBy,
+      reconciled ? 'TRUE' : 'FALSE', trigger, 'Active on-site (all types)', detail.length, totalQty,
+      JSON.stringify(classBreak), detailTab, sha, prevChain, chain]);
+
+    return { snapshot_id: id, period: period, detail_tab: detailTab, item_count: detail.length,
+      total_quantity: totalQty, sha256: sha, reconciled: reconciled };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function snapshots_() {
+  if (!_ss().getSheetByName(SNAP_MANIFEST)) return { items: [] };
+  var rows = readTab_(SNAP_MANIFEST);
+  var items = rows.map(function (r) {
+    return { snapshot_id: str_(r['Snapshot_ID']), period: str_(r['Period']), captured_at: localTs_(r['Captured_At']),
+      captured_by: str_(r['Captured_By']), reconciled: /true/i.test(String(r['Reconciled'])), trigger: str_(r['Trigger']),
+      scope: str_(r['Scope']), item_count: num_(r['Item_Count']), total_quantity: num_(r['Total_Quantity']),
+      class_breakdown: str_(r['Class_Breakdown']), detail_tab: str_(r['Detail_Tab']), sha256: str_(r['SHA256']),
+      prev_chain: str_(r['Prev_Chain']), chain: str_(r['Chain']) };
+  }).filter(function (s) { return s.snapshot_id; });
+  return { items: items };
+}
+
+// Return a snapshot detail tab as its canonical CSV (for download + verify). Built
+// with the SAME routine as capture, so an untampered snapshot re-hashes to its
+// stored SHA256.
+function snapshotCsv_(tab) {
+  tab = String(tab || '').trim();
+  if (!/^SNAP_/.test(tab)) return { error: 'invalid snapshot tab' };
+  var sh = _ss().getSheetByName(tab);
+  if (!sh) return { error: 'snapshot ' + tab + ' not found' };
+  var values = sh.getDataRange().getValues();
+  var rows = values.map(function (r) { return r.map(function (c) { return (c == null) ? '' : c; }); });
+  var csv = _snapCsv(rows);
+  return { tab: tab, csv: csv, sha256: _sha256(csv) };
+}
+
+// ── Automated fallback: snapshot the prior month on the 1st if none was taken ──
+// Install once from the editor: run installSnapshotTrigger_(). It fires on the 1st
+// at 02:00; if the button was already used for that month, it does nothing.
+function monthlySnapshotFallback_() {
+  var ss = _ss(); var tz = ss.getSpreadsheetTimeZone();
+  var now = new Date();
+  var prior = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  var period = Utilities.formatDate(prior, tz, 'yyyy-MM');
+  var man = ss.getSheetByName(SNAP_MANIFEST);
+  if (man) {
+    var md = man.getDataRange().getValues();
+    for (var i = 1; i < md.length; i++) { if (String(md[i][1]).trim() === period) return; }   // already done
+  }
+  createSnapshot_({ period: period, trigger: 'auto', captured_by: 'system (auto month-end)' });
+}
+
+function installSnapshotTrigger_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'monthlySnapshotFallback_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('monthlySnapshotFallback_').timeBased().onMonthDay(1).atHour(2).create();
+  return 'installed';
 }
 
 // ── Write-back: Goods Return register ────────────────────────────────────────
