@@ -36,7 +36,11 @@ export function prodFamily(i: InventoryItem): string | null {
   if (pt === "MS DUAL") return "MS DUAL";
   if (pt === "QS") return "QS";
   if (pt === "TITANIUM") return "TITANIUM";
-  if (i.machine === "Axxis" && /silver/i.test(i.description)) return "SILVER";
+  // SILVER (Axxis line). The Machine column is blank on every label, so the old
+  // `machine === "Axxis"` test never fired and SILVER production fell off the
+  // chart and the monthly totals entirely. Match it by ProductType/description,
+  // the same way the three families above are keyed off ProductType.
+  if (pt === "SILVER" || /silver/i.test(i.description)) return "SILVER";
   return null;
 }
 
