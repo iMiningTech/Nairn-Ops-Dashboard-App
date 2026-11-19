@@ -314,8 +314,9 @@ function snapshotCsv_(tab) {
 }
 
 // ── Automated fallback: snapshot the prior month on the 1st if none was taken ──
-// Install once from the editor: run installSnapshotTrigger_(). It fires on the 1st
-// at 02:00; if the button was already used for that month, it does nothing.
+// Install once from the editor: pick installSnapshotTrigger in the Run dropdown and
+// Run it. It fires on the 1st at 02:00; if the button was already used for that
+// month, it does nothing. (No trailing underscore, so it shows in the Run list.)
 function monthlySnapshotFallback_() {
   var ss = _ss(); var tz = ss.getSpreadsheetTimeZone();
   var now = new Date();
@@ -329,7 +330,7 @@ function monthlySnapshotFallback_() {
   createSnapshot_({ period: period, trigger: 'auto', captured_by: 'system (auto month-end)' });
 }
 
-function installSnapshotTrigger_() {
+function installSnapshotTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'monthlySnapshotFallback_') ScriptApp.deleteTrigger(t);
   });
