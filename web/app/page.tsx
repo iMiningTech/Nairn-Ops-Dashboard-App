@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, Package, Boxes, Wrench, Scale, RefreshCw, AlertCircle, AlertTriangle,
   CheckCircle2, Search, Download, Factory, ArrowRightLeft, Target, PackageCheck, Flame, ShieldCheck,
   CalendarRange, Wrench as WrenchIcon, ClipboardCheck, Receipt, Clock, X, Hash, LogOut, Trash2, BookOpen, Printer, FileText,
-  FileDown, Copy, Check,
+  FileDown, Copy, Check, History,
 } from "lucide-react";
 import { api, driveThumbUrl, type InventoryItem, type Transaction, type User, type DailyTarget, type QcCheck, type Decon, type BatchContent, type HoldingContent, type ManufacturableLength, type RefRow, type IssuedBol, type Signature, type Ticket, type TicketEvent, type ShiftReport, type Capability } from "@/lib/api";
 import { Card, CardBody, Stat, Badge } from "@/components/ui";
@@ -51,6 +51,7 @@ const VIEWS = [
   { id: "rawmaterials", label: "Raw Materials", icon: Package },
   { id: "received", label: "Received", icon: PackageCheck },
   { id: "financial", label: "Financial Lookup", icon: Hash },
+  { id: "history", label: "Item History", icon: History },
   { id: "destruction", label: "Destruction & Waste", icon: Trash2 },
   { id: "sales", label: "Sales History", icon: Receipt },
   { id: "bol", label: "Bill of Lading & Returns", icon: FileText },
@@ -248,7 +249,7 @@ export default function Dashboard() {
             <div className="mt-2 text-[11px] leading-snug text-sidebarfg/50">
               {view === "monthly"
                 ? "Pick any day — the Monthly Report shows that whole month. Both pickers stay in sync."
-                : "Applies to Operators, Breakdowns, Pool & Reconciliation. The Overview is always live (today)."}
+                : "Applies to Operators, Breakdowns, Item History, Pool & Reconciliation. The Overview is always live (today)."}
             </div>
           </div>
           )}
@@ -296,6 +297,7 @@ export default function Dashboard() {
               {view === "rawmaterials" && <RawMaterialsView items={items} />}
               {view === "received" && <ReceivedView items={items} txns={txns} />}
               {view === "financial" && <FinancialLookupView items={items} />}
+              {view === "history" && <ItemHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} />}
               {view === "destruction" && <DestructionView items={items} txns={txns} contents={batchContents} range={range} rangeLabel={rangeLabel} />}
               {view === "sales" && <SalesHistoryView items={items} txns={txns} range={range} rangeLabel={rangeLabel} onSaved={reloadLive} onNavigate={setView} />}
               {view === "bol" && <><BolView items={items} txns={txns} /><ReturnsView items={items} txns={txns} /></>}
@@ -1419,6 +1421,249 @@ function FinancialTable({ data }: { data: FinResult }) {
         </tfoot>
       </table>
     </div>
+  );
+}
+
+// ── Item History: full transaction trail for one box, pool, or product ───────
+// Pick any item (a finished-goods/raw box, or a Pool like POOL-MS500-CR-001 in
+// the Component Room) and see every Transaction_Log event against it over the
+// sidebar date range — movements, quantity changes, pool increments/decrements,
+// status changes, reprints. Lets Justin cross-check "what I'm being told" against
+// the actual system record. A box is one QR; a pool is one QR; a product (e.g.
+// "17ms detonators") is many QRs, so you can also roll up every matching box.
+const HISTORY_TYPE_TONE = (t: string): "ok" | "warn" | "danger" | "muted" => {
+  const u = t.toUpperCase();
+  if (u.includes("DECREMENT") || u.includes("DESTROY") || u.includes("VOID")) return "danger";
+  if (u.includes("INCREMENT") || u === "LABEL_CREATED") return "ok";
+  if (u.includes("LOCATION") || u.includes("STATUS") || u.includes("MANUAL")) return "warn";
+  return "muted";
+};
+
+function ItemHistoryView({ items, txns, range, rangeLabel }:
+  { items: InventoryItem[]; txns: Transaction[]; range: DateRange; rangeLabel: string }) {
+  const [q, setQ] = useState("");
+  const [selectedQr, setSelectedQr] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const [newestFirst, setNewestFirst] = useState(true);
+
+  // Matching items by QR / description / financial no / location / PO / customer.
+  const needle = q.trim().toLowerCase();
+  const matches = useMemo(() => {
+    if (needle.length < 2) return [];
+    return items.filter((i) => {
+      const hay = [i.qr, i.description, i.financial_no, i.current_location, i.current_sub_location, i.po_number, i.customer, i.type]
+        .map((s) => String(s || "").toLowerCase());
+      return hay.some((h) => h.includes(needle));
+    });
+  }, [items, needle]);
+
+  // One Inventory_Master row per QR (the current state of the selected item).
+  const byQr = useMemo(() => { const m = new Map<string, InventoryItem>(); for (const i of items) if (!m.has(i.qr)) m.set(i.qr, i); return m; }, [items]);
+  const selected = selectedQr ? byQr.get(selectedQr) || null : null;
+
+  // Which QRs are in scope for the timeline.
+  const scopeQrs = useMemo(() => {
+    if (showAll) return new Set(matches.map((i) => i.qr));
+    return new Set(selectedQr ? [selectedQr] : []);
+  }, [showAll, matches, selectedQr]);
+
+  // The events: this QR-set, within the sidebar date range, sorted.
+  const events = useMemo(() => {
+    if (!scopeQrs.size) return [];
+    const rows = txns.filter((t) => scopeQrs.has(t.qr) && inRange(t, range));
+    rows.sort((a, b) => {
+      const ta = Date.parse(a.timestamp || "") || 0, tb = Date.parse(b.timestamp || "") || 0;
+      return newestFirst ? tb - ta : ta - tb;
+    });
+    return rows;
+  }, [txns, scopeQrs, range, newestFirst]);
+
+  // Net quantity movement across Current_Quantity events in range (handy for pools).
+  const qtyStats = useMemo(() => {
+    const qrows = txns.filter((t) => scopeQrs.has(t.qr) && t.field === "Current_Quantity" && inRange(t, range));
+    qrows.sort((a, b) => (Date.parse(a.timestamp || "") || 0) - (Date.parse(b.timestamp || "") || 0));
+    if (!qrows.length) return null;
+    const num = (s: string) => { const n = Number(String(s).replace(/[, ]/g, "")); return isNaN(n) ? 0 : n; };
+    const startVal = num(qrows[0].old_value);
+    const endVal = num(qrows[qrows.length - 1].new_value);
+    let inc = 0, dec = 0;
+    for (const r of qrows) { const d = num(r.new_value) - num(r.old_value); if (d > 0) inc += d; else dec += -d; }
+    return { startVal, endVal, net: endVal - startVal, inc, dec, moves: qrows.length };
+  }, [txns, scopeQrs, range]);
+
+  const firstEv = events.length ? events[newestFirst ? events.length - 1 : 0] : null;
+  const lastEv = events.length ? events[newestFirst ? 0 : events.length - 1] : null;
+
+  function exportCsv() {
+    const cols: Col[] = [
+      { key: "timestamp", label: "Timestamp" }, { key: "qr", label: "QR" }, { key: "type", label: "Type" },
+      { key: "field", label: "Field" }, { key: "old_value", label: "Old value" }, { key: "new_value", label: "New value" },
+      { key: "reason", label: "Reason" }, { key: "user", label: "User" }, { key: "source", label: "Source" }, { key: "notes", label: "Notes" },
+    ];
+    const label = showAll ? `search_${needle.replace(/\W+/g, "-")}` : (selectedQr || "none");
+    csvDownload(`item_history_${label}_${range.from}_to_${range.to}.csv`, cols,
+      events.map((e) => ({ ...e, timestamp: fmtTime(e.timestamp) })) as unknown as Record<string, unknown>[]);
+  }
+
+  return (
+    <>
+      <Card><CardBody>
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg"><History size={18} /> Item history &amp; audit trail</div>
+        <p className="mb-4 max-w-3xl text-sm text-muted">
+          Search for a box, a pool (e.g. <span className="font-mono text-fg">POOL-MS500-CR-001</span> in the Component Room), or a product,
+          then see every movement and change recorded against it over the selected date range. Use it to check the system&apos;s record against
+          what you&apos;re being told on the floor. Date range ({rangeLabel}) is set in the sidebar.
+        </p>
+        <div className="relative max-w-xl">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setSelectedQr(null); setShowAll(false); }}
+            placeholder="Search QR, description, financial no, location, PO or customer…"
+            className="w-full rounded-lg border border-border bg-bg py-2 pl-9 pr-3 text-sm outline-none focus:border-accent" />
+        </div>
+
+        {needle.length >= 2 && (
+          <div className="mt-3">
+            <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-muted">
+              <span>{matches.length} item(s) match &ldquo;{q.trim()}&rdquo;{matches.length > 200 ? " (showing first 200)" : ""}</span>
+              {matches.length > 1 && (
+                <button onClick={() => { setShowAll((v) => !v); setSelectedQr(null); }}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium ${showAll ? "border-accent bg-accent/10 text-accent" : "border-border hover:bg-bg"}`}>
+                  <Boxes size={13} /> {showAll ? "Showing combined history" : `Combine all ${matches.length} boxes`}
+                </button>
+              )}
+            </div>
+            {!showAll && (
+              <div className="max-h-64 overflow-auto rounded-xl border border-border">
+                <table className="w-full min-w-[42rem] text-sm">
+                  <thead className="sticky top-0 z-10 bg-bg text-xs uppercase tracking-wide text-muted">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">QR</th>
+                      <th className="px-3 py-2 text-left font-medium">Description</th>
+                      <th className="px-3 py-2 text-left font-medium">Type</th>
+                      <th className="px-3 py-2 text-left font-medium">Location</th>
+                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                      <th className="px-3 py-2 text-right font-medium">Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matches.slice(0, 200).map((i) => (
+                      <tr key={i.qr} onClick={() => setSelectedQr(i.qr)}
+                        className={`cursor-pointer border-t border-border hover:bg-bg/60 ${selectedQr === i.qr ? "bg-accent/10" : ""}`}>
+                        <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-fg">{i.qr}</td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{i.description}</td>
+                        <td className="px-3 py-1.5"><span className="inline-flex items-center gap-1 text-xs text-muted"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: TYPE_COLOURS[i.type] || TYPE_COLOURS.Unknown }} />{i.type}</span></td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{i.current_location}{i.current_sub_location ? ` · ${i.current_sub_location}` : ""}</td>
+                        <td className="px-3 py-1.5 text-muted">{i.status}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-muted">{fmtNum(i.current_quantity)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </CardBody></Card>
+
+      {scopeQrs.size > 0 && (
+        <>
+          {/* Context header: the selected item, or the combined-search summary */}
+          <Card><CardBody>
+            {showAll ? (
+              <div className="text-sm">
+                <div className="font-semibold text-fg">Combined history — {matches.length} box(es) matching &ldquo;{q.trim()}&rdquo;</div>
+                <div className="mt-0.5 text-xs text-muted">Every transaction across all matching items. Each row shows which QR it belongs to.</div>
+              </div>
+            ) : selected ? (
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
+                <div><div className="text-xs text-muted">QR</div><div className="font-mono text-xs text-fg">{selected.qr}</div></div>
+                <div><div className="text-xs text-muted">Description</div><div className="text-fg">{selected.description}</div></div>
+                <div><div className="text-xs text-muted">Type</div><div className="text-fg">{selected.type}</div></div>
+                <div><div className="text-xs text-muted">Financial no</div><div className="text-fg">{selected.financial_no || "—"}</div></div>
+                <div><div className="text-xs text-muted">Current location</div><div className="text-fg">{selected.current_location || "—"}{selected.current_sub_location ? ` · ${selected.current_sub_location}` : ""}</div></div>
+                <div><div className="text-xs text-muted">Status</div><div className="text-fg">{selected.status}</div></div>
+                <div><div className="text-xs text-muted">Current qty</div><div className="text-fg">{fmtNum(selected.current_quantity)}</div></div>
+                <div><div className="text-xs text-muted">Customer / PO</div><div className="text-fg">{selected.customer || "—"}{selected.po_number ? ` · ${selected.po_number}` : ""}</div></div>
+              </div>
+            ) : null}
+          </CardBody></Card>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Stat label="Events in range" value={fmtNum(events.length)} sub={rangeLabel} />
+            <Stat label="Boxes in view" value={fmtNum(scopeQrs.size)} />
+            <Stat label="First event" value={firstEv ? shortDay(dateKey(firstEv.timestamp)) : "—"} sub={firstEv ? fmtTime(firstEv.timestamp) : undefined} />
+            <Stat label="Last event" value={lastEv ? shortDay(dateKey(lastEv.timestamp)) : "—"} sub={lastEv ? fmtTime(lastEv.timestamp) : undefined} />
+          </div>
+
+          {qtyStats && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <Stat label="Qty at range start" value={fmtNum(qtyStats.startVal)} />
+              <Stat label="Qty at range end" value={fmtNum(qtyStats.endVal)} />
+              <Stat label="Net change" value={`${qtyStats.net >= 0 ? "+" : ""}${fmtNum(qtyStats.net)}`} status={qtyStats.net < 0 ? "warn" : "ok"} />
+              <Stat label="Total in" value={`+${fmtNum(qtyStats.inc)}`} status="ok" />
+              <Stat label="Total out" value={`−${fmtNum(qtyStats.dec)}`} status={qtyStats.dec ? "warn" : undefined} />
+            </div>
+          )}
+
+          <Card><CardBody>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-fg">Transaction trail ({events.length})</div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setNewestFirst((v) => !v)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs hover:bg-bg">
+                  <ArrowRightLeft size={13} /> {newestFirst ? "Newest first" : "Oldest first"}
+                </button>
+                <button onClick={exportCsv} disabled={!events.length} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs hover:bg-bg disabled:opacity-50">
+                  <Download size={13} /> CSV
+                </button>
+              </div>
+            </div>
+            {!events.length ? (
+              <div className="py-10 text-center text-sm text-muted">No transactions for this item between {rangeLabel}. Widen the date range in the sidebar (try &ldquo;All&rdquo;).</div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <table className="w-full min-w-[52rem] text-sm">
+                  <thead className="sticky top-0 z-10 bg-bg text-xs uppercase tracking-wide text-muted">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">When</th>
+                      {showAll && <th className="px-3 py-2 text-left font-medium">QR</th>}
+                      <th className="px-3 py-2 text-left font-medium">Event</th>
+                      <th className="px-3 py-2 text-left font-medium">Field</th>
+                      <th className="px-3 py-2 text-left font-medium">Change</th>
+                      <th className="px-3 py-2 text-left font-medium">User</th>
+                      <th className="px-3 py-2 text-left font-medium">Reason / notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.map((e, i) => (
+                      <tr key={i} className="border-t border-border align-top hover:bg-bg/60">
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{fmtTime(e.timestamp)}</td>
+                        {showAll && <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-muted">{e.qr}</td>}
+                        <td className="px-3 py-1.5"><Badge tone={HISTORY_TYPE_TONE(e.type)}>{e.type}</Badge></td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{e.field || "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-fg">
+                          {e.old_value || e.new_value
+                            ? <span className="tabular-nums"><span className="text-muted">{e.old_value || "∅"}</span> <span className="text-muted">→</span> <span className="font-medium">{e.new_value || "∅"}</span></span>
+                            : "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{e.user || e.source || "—"}</td>
+                        <td className="px-3 py-1.5 text-muted">{[e.reason, e.notes].filter(Boolean).join(" · ") || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardBody></Card>
+        </>
+      )}
+
+      {needle.length >= 2 && !matches.length && (
+        <Card><CardBody><div className="py-8 text-center text-sm text-muted">No items match &ldquo;{q.trim()}&rdquo;. Try a QR, description word, financial number, or a location like &ldquo;Component Room&rdquo;.</div></CardBody></Card>
+      )}
+      {needle.length < 2 && (
+        <Card><CardBody><div className="py-8 text-center text-sm text-muted">Start typing above to find an item. Examples: a QR, &ldquo;17ms&rdquo;, a financial number, or &ldquo;Component Room&rdquo; to see the pools there.</div></CardBody></Card>
+      )}
+    </>
   );
 }
 
