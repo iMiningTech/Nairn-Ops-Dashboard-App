@@ -7,9 +7,15 @@
 
 import type { InventoryItem, Transaction } from "@/lib/api";
 import { buildBol, type Bol } from "@/lib/bol";
+import { dateKey } from "@/lib/utils";
 
 const isOffSite = (s: string) => s.trim().toLowerCase() === "off-site";
 const ms = (s?: string | null) => (s ? Date.parse(s) || 0 : 0);
+// A box only counts as a pending return if it's STILL back on-site right now:
+// Status Active and not Off-Site. A box that was returned and then re-shipped
+// (Sold / Off-Site again) has left, so it must drop off the Returns tab.
+const isBackOnSiteNow = (i: InventoryItem) =>
+  i.status.trim().toLowerCase() === "active" && !isOffSite(i.current_location);
 
 export type ReturnedBox = {
   item: InventoryItem;
@@ -21,6 +27,7 @@ export type ReturnedBox = {
 };
 
 export type ReturnGroup = {
+  day: string;                 // YYYY-MM-DD the boxes came back (groups are per-day)
   customer: string;
   po: string;
   boxes: ReturnedBox[];
@@ -58,6 +65,7 @@ export function detectReturns(items: InventoryItem[], txns: Transaction[]): Retu
     if (!locMoves || !locMoves.length) continue;       // needs BOTH signals
     const item = itemByQr.get(qr);
     if (!item) continue;                                // need the row for DG details
+    if (!isBackOnSiteNow(item)) continue;               // re-shipped since → not a pending return
 
     // The return event = the latest Sold→Active; the location it came back to is
     // the Off-Site→location move closest in time to it (else the current row).
@@ -77,13 +85,16 @@ export function detectReturns(items: InventoryItem[], txns: Transaction[]): Retu
   return out.sort((a, b) => ms(b.returnedAt) - ms(a.returnedAt));
 }
 
-// Group returned boxes by customer then PO (one return note per PO collection),
-// newest-return-first.
+// Group returned boxes by RETURN DAY, then customer then PO. Keying on the day
+// too means boxes that came back on different days never merge into one group —
+// so today's returns aren't lumped in with un-processed ones from weeks ago (the
+// bug that made 11 boxes scanned today read as "14"). Newest day first.
 export function groupReturns(returns: ReturnedBox[]): ReturnGroup[] {
   const m = new Map<string, ReturnGroup>();
   for (const r of returns) {
-    const key = `${r.customer || "(no customer)"}||${r.po || "(no PO)"}`;
-    const g = m.get(key) || { customer: r.customer || "(no customer)", po: r.po || "(no PO)", boxes: [], returnedAt: null };
+    const day = dateKey(r.returnedAt) || "(undated)";
+    const key = `${day}||${r.customer || "(no customer)"}||${r.po || "(no PO)"}`;
+    const g = m.get(key) || { day, customer: r.customer || "(no customer)", po: r.po || "(no PO)", boxes: [], returnedAt: null };
     g.boxes.push(r);
     if (ms(r.returnedAt) > ms(g.returnedAt)) g.returnedAt = r.returnedAt;
     m.set(key, g);

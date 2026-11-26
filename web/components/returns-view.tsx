@@ -161,9 +161,10 @@ export function ReturnsView({ items, txns }: { items: InventoryItem[]; txns: Tra
           ) : (
             <div className="max-h-[26rem] space-y-3 overflow-auto">
               {groups.map((g) => (
-                <div key={`${g.customer}|${g.po}`} className="rounded-xl border border-border">
+                <div key={`${g.day}|${g.customer}|${g.po}`} className="rounded-xl border border-border">
                   <label className="flex cursor-pointer items-center gap-2 border-b border-border bg-bg px-3 py-2 text-sm font-semibold text-fg">
                     <input type="checkbox" checked={g.boxes.every((b) => sel.has(b.item.qr))} onChange={() => toggleMany(g.boxes)} />
+                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">{fmtDate(g.returnedAt || "")}</span>
                     {g.customer} <span className="font-normal text-muted">· PO {g.po} · {g.boxes.length} box(es) · {fmtNum(g.boxes.reduce((s, b) => s + b.item.original_quantity, 0))} u · returned {fmtTime(g.returnedAt)}</span>
                   </label>
                   <div className="divide-y divide-border">
