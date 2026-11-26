@@ -1445,6 +1445,8 @@ function ItemHistoryView({ items, txns, range, rangeLabel }:
   const [selectedQr, setSelectedQr] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [newestFirst, setNewestFirst] = useState(true);
+  const [allOpen, setAllOpen] = useState(false);   // the "everything in range" log below
+  const [allQ, setAllQ] = useState("");
 
   // Matching items by QR / description / financial no / location / PO / customer.
   const needle = q.trim().toLowerCase();
@@ -1503,6 +1505,31 @@ function ItemHistoryView({ items, txns, range, rangeLabel }:
     const label = showAll ? `search_${needle.replace(/\W+/g, "-")}` : (selectedQr || "none");
     csvDownload(`item_history_${label}_${range.from}_to_${range.to}.csv`, cols,
       events.map((e) => ({ ...e, timestamp: fmtTime(e.timestamp) })) as unknown as Record<string, unknown>[]);
+  }
+
+  // "Everything in range" — every transaction in the sidebar date range, no item
+  // filter, newest first, with an optional free-text filter. A whole-plant log for
+  // the day/period, handy when something odd happened and you don't know the QR yet.
+  const allInRange = useMemo(() => {
+    const rows = txns.filter((t) => inRange(t, range));
+    rows.sort((a, b) => (Date.parse(b.timestamp || "") || 0) - (Date.parse(a.timestamp || "") || 0));
+    return rows;
+  }, [txns, range]);
+  const allFiltered = useMemo(() => {
+    const n = allQ.trim().toLowerCase();
+    if (!n) return allInRange;
+    return allInRange.filter((t) => [t.qr, t.type, t.field, t.user, t.source, t.old_value, t.new_value, t.reason, t.notes]
+      .some((s) => String(s || "").toLowerCase().includes(n)));
+  }, [allInRange, allQ]);
+  const ALL_CAP = 1000;
+  function exportAll() {
+    const cols: Col[] = [
+      { key: "timestamp", label: "Timestamp" }, { key: "qr", label: "QR" }, { key: "type", label: "Type" },
+      { key: "field", label: "Field" }, { key: "old_value", label: "Old value" }, { key: "new_value", label: "New value" },
+      { key: "reason", label: "Reason" }, { key: "user", label: "User" }, { key: "source", label: "Source" }, { key: "notes", label: "Notes" },
+    ];
+    csvDownload(`all_transactions_${range.from}_to_${range.to}.csv`, cols,
+      allFiltered.map((e) => ({ ...e, timestamp: fmtTime(e.timestamp) })) as unknown as Record<string, unknown>[]);
   }
 
   return (
@@ -1663,6 +1690,68 @@ function ItemHistoryView({ items, txns, range, rangeLabel }:
       {needle.length < 2 && (
         <Card><CardBody><div className="py-8 text-center text-sm text-muted">Start typing above to find an item. Examples: a QR, &ldquo;17ms&rdquo;, a financial number, or &ldquo;Component Room&rdquo; to see the pools there.</div></CardBody></Card>
       )}
+
+      {/* Everything in the date range — the whole-plant log, no item filter */}
+      <Card><CardBody>
+        <button onClick={() => setAllOpen((v) => !v)} className="flex w-full items-center justify-between gap-2 text-left">
+          <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+            <ArrowRightLeft size={16} /> All transactions in range — {rangeLabel}
+            <span className="rounded-full bg-muted/10 px-2 py-0.5 text-xs font-medium text-muted">{fmtNum(allInRange.length)}</span>
+          </span>
+          <span className="text-xs text-muted">{allOpen ? "Hide ▲" : "Show ▼"}</span>
+        </button>
+        {allOpen && (
+          <div className="mt-3">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 min-w-[12rem] max-w-md">
+                <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input value={allQ} onChange={(e) => setAllQ(e.target.value)} placeholder="Filter by QR, type, field, user, value…"
+                  className="w-full rounded-lg border border-border bg-bg py-1.5 pl-9 pr-3 text-sm outline-none focus:border-accent" />
+              </div>
+              <span className="text-xs text-muted">{fmtNum(allFiltered.length)} shown{allFiltered.length > ALL_CAP ? ` (first ${ALL_CAP})` : ""}</span>
+              <button onClick={exportAll} disabled={!allFiltered.length} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs hover:bg-bg disabled:opacity-50">
+                <Download size={13} /> CSV{allFiltered.length > ALL_CAP ? " (all)" : ""}
+              </button>
+            </div>
+            {!allFiltered.length ? (
+              <div className="py-8 text-center text-sm text-muted">No transactions in this range{allQ ? " matching that filter" : ""}. Widen the date range in the sidebar.</div>
+            ) : (
+              <div className="max-h-[32rem] overflow-auto rounded-xl border border-border">
+                <table className="w-full min-w-[52rem] text-sm">
+                  <thead className="sticky top-0 z-10 bg-bg text-xs uppercase tracking-wide text-muted">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">When</th>
+                      <th className="px-3 py-2 text-left font-medium">QR</th>
+                      <th className="px-3 py-2 text-left font-medium">Event</th>
+                      <th className="px-3 py-2 text-left font-medium">Field</th>
+                      <th className="px-3 py-2 text-left font-medium">Change</th>
+                      <th className="px-3 py-2 text-left font-medium">User</th>
+                      <th className="px-3 py-2 text-left font-medium">Reason / notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allFiltered.slice(0, ALL_CAP).map((e, i) => (
+                      <tr key={i} className="border-t border-border align-top hover:bg-bg/60">
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{fmtTime(e.timestamp)}</td>
+                        <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-muted">{e.qr}</td>
+                        <td className="px-3 py-1.5"><Badge tone={HISTORY_TYPE_TONE(e.type)}>{e.type}</Badge></td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{e.field || "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-fg">
+                          {e.old_value || e.new_value
+                            ? <span className="tabular-nums"><span className="text-muted">{e.old_value || "∅"}</span> <span className="text-muted">→</span> <span className="font-medium">{e.new_value || "∅"}</span></span>
+                            : "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-1.5 text-muted">{e.user || e.source || "—"}</td>
+                        <td className="px-3 py-1.5 text-muted">{[e.reason, e.notes].filter(Boolean).join(" · ") || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </CardBody></Card>
     </>
   );
 }
