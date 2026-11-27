@@ -37,7 +37,10 @@ export type ReturnGroup = {
 // Every box that has come back: a Status Sold→Active AND a Current_Location
 // Off-Site→(real location) transition for the same QR. PO/customer come from the
 // current inventory row, falling back to the latest PO/customer update in the log.
-export function detectReturns(items: InventoryItem[], txns: Transaction[]): ReturnedBox[] {
+// `dismissed` maps a QR → the newest return timestamp (ms) a manager marked
+// "not a return". A detected return is hidden when its own return event is not
+// newer than that — so a genuinely later return (newer Sold→Active) reappears.
+export function detectReturns(items: InventoryItem[], txns: Transaction[], dismissed?: Map<string, number>): ReturnedBox[] {
   const itemByQr = new Map(items.map((i) => [i.qr, i]));
 
   // Latest PO / customer per QR from the log (fallback when the row has none).
@@ -71,6 +74,8 @@ export function detectReturns(items: InventoryItem[], txns: Transaction[]): Retu
     // the Off-Site→location move closest in time to it (else the current row).
     const ret = statusMoves.slice().sort((a, b) => ms(b.timestamp) - ms(a.timestamp))[0];
     const retMs = ms(ret.timestamp);
+    const dz = dismissed?.get(qr);                      // dismissed "not a return"?
+    if (dz != null && retMs <= dz) continue;            // this return was dismissed
     const loc = locMoves.slice().sort((a, b) => Math.abs(ms(a.timestamp) - retMs) - Math.abs(ms(b.timestamp) - retMs))[0];
 
     out.push({

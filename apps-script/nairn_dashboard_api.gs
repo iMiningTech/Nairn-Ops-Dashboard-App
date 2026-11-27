@@ -58,10 +58,11 @@ function doGet(e) {
       case 'manufacturingReference': return _json(manufacturingReference_());
       case 'bols':          return _json(bols_());
       case 'returns':       return _json(returns_());
+      case 'returnDismissals': return _json(dismissals_());
       case 'signatures':    return _json(signatures_());
       case 'snapshots':     return _json(snapshots_());
       case 'snapshotCsv':   return _json(snapshotCsv_(params.tab));
-      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'returns', 'signatures', 'snapshots', 'snapshotCsv'] });
+      default:              return _json({ error: 'unknown action', actions: ['stockOnHand', 'transactions', 'users', 'targets', 'batchContents', 'manufacturableLengths', 'manufacturingReference', 'bols', 'returns', 'returnDismissals', 'signatures', 'snapshots', 'snapshotCsv'] });
     }
   } catch (err) {
     return _json({ error: String(err && err.message || err) });
@@ -79,6 +80,8 @@ function doPost(e) {
     if (body.action === 'voidBol') return _json(voidBol_(body));
     if (body.action === 'createSnapshot') return _json(createSnapshot_(body));
     if (body.action === 'createReturn') return _json(createReturn_(body));
+    if (body.action === 'dismissReturn') return _json(dismissReturn_(body));
+    if (body.action === 'undismissReturn') return _json(undismissReturn_(body));
     if (body.action === 'updatePo' || body.action === 'amendSale') return _json(amendSale_(body));
     if (body.action === 'setTicketStation') return _json(setTicketStation_(body));
     return _json({ error: 'unknown action' });
@@ -386,6 +389,73 @@ function returns_() {
       include_neq: /true/i.test(String(r['Include_NEQ'])), classes: str_(r['Classes']),
       box_qrs: str_(r['Box_QRs']), lines_json: str_(r['Lines_JSON']), reason: str_(r['Reason']), status: str_(r['Status']) };
   }).filter(function (b) { return b.rtn_no; });
+  return { items: items };
+}
+
+// ── Returns: dismiss a detected "return" that isn't really one ────────────────
+// The Returns tab detects a box as returned from its Sold→Active + Off-Site→here
+// transitions. Sometimes that fires on a non-return — e.g. a box pulled for an
+// order then put straight back when the order was wrong. This lets the dashboard
+// mark such a box "not a return" so it drops off the list, WITHOUT touching the
+// box or the Transaction_Log. We record QR + the return timestamp that was
+// dismissed, so if the box is genuinely returned again LATER (a newer Sold→Active
+// than Return_Ts) it reappears on its own. Append-only + an Active flag, so an
+// undo just flips Active to FALSE — the audit trail is kept.
+var RETURN_DISMISS = 'Return_Dismissals';
+var RDISMISS_HEADERS = ['QR', 'Return_Ts', 'Dismissed_At', 'Dismissed_By', 'Reason', 'Active'];
+
+function dismissReturn_(b) {
+  // Accepts items:[{qr, return_ts}] or qrs:[...] (+ optional return_ts for all).
+  var items = b.items && b.items.length ? b.items
+    : (b.qrs || []).map(function (q) { return { qr: q, return_ts: b.return_ts || '' }; });
+  items = items.filter(function (it) { return it && String(it.qr || '').trim(); });
+  if (!items.length) return { error: 'no qrs to dismiss' };
+  var by = String(b.by || b.dismissed_by || 'dashboard').trim();
+  var reason = String(b.reason || '').trim();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = _ss();
+    var sh = ss.getSheetByName(RETURN_DISMISS);
+    if (!sh) { sh = ss.insertSheet(RETURN_DISMISS); sh.appendRow(RDISMISS_HEADERS); }
+    var tz = ss.getSpreadsheetTimeZone();
+    var now = Utilities.formatDate(new Date(), tz, 'M/d/yyyy H:mm:ss');
+    items.forEach(function (it) {
+      sh.appendRow([String(it.qr).trim(), String(it.return_ts || ''), now, by, reason, 'TRUE']);
+    });
+    return { dismissed: items.length };
+  } finally { lock.releaseLock(); }
+}
+
+function undismissReturn_(b) {
+  var qrs = (b.qrs || []).map(function (q) { return String(q).trim(); }).filter(String);
+  if (!qrs.length) return { error: 'no qrs' };
+  var want = {}; qrs.forEach(function (q) { want[q] = true; });
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = _ss();
+    var sh = ss.getSheetByName(RETURN_DISMISS);
+    if (!sh) return { undismissed: 0 };
+    var data = sh.getDataRange().getValues();
+    var c = {}; data[0].forEach(function (h, i) { c[String(h).trim()] = i; });
+    var n = 0;
+    for (var i = 1; i < data.length; i++) {
+      if (want[String(data[i][c['QR']]).trim()] && String(data[i][c['Active']]).toUpperCase() !== 'FALSE') {
+        sh.getRange(i + 1, c['Active'] + 1).setValue('FALSE'); n++;
+      }
+    }
+    return { undismissed: n };
+  } finally { lock.releaseLock(); }
+}
+
+function dismissals_() {
+  if (!_ss().getSheetByName(RETURN_DISMISS)) return { items: [] };
+  var rows = readTab_(RETURN_DISMISS);
+  var items = rows.map(function (r) {
+    return { qr: str_(r['QR']), return_ts: str_(r['Return_Ts']), dismissed_at: localTs_(r['Dismissed_At']),
+      dismissed_by: str_(r['Dismissed_By']), reason: str_(r['Reason']), active: /true/i.test(String(r['Active'])) };
+  }).filter(function (d) { return d.qr && d.active; });
   return { items: items };
 }
 

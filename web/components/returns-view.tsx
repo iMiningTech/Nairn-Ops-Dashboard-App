@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Printer, X, FileText, Undo2, RotateCcw, AlertTriangle } from "lucide-react";
-import { api, type InventoryItem, type Transaction, type IssuedReturn } from "@/lib/api";
+import { Printer, X, FileText, Undo2, RotateCcw, AlertTriangle, Ban } from "lucide-react";
+import { api, type InventoryItem, type Transaction, type IssuedReturn, type ReturnDismissal } from "@/lib/api";
 import { type Bol, type BolLine } from "@/lib/bol";
 import { detectReturns, groupReturns, buildReturn, draftReturnNumber, type ReturnedBox } from "@/lib/returns";
 import { Card, CardBody, Stat } from "@/components/ui";
@@ -19,7 +19,17 @@ type DocState = {
 };
 
 export function ReturnsView({ items, txns }: { items: InventoryItem[]; txns: Transaction[] }) {
-  const returns = useMemo(() => detectReturns(items, txns), [items, txns]);
+  // "Not a return" dismissals: a box a manager marked as not really returned.
+  const [dismissals, setDismissals] = useState<ReturnDismissal[]>([]);
+  const loadDismissals = () => api.returnDismissals().then((r) => setDismissals(r.items)).catch(() => {});
+  useEffect(() => { loadDismissals(); }, []);
+  const dismissedMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const d of dismissals) m.set(d.qr, Math.max(m.get(d.qr) || 0, Date.parse(d.return_ts || "") || 0));
+    return m;
+  }, [dismissals]);
+
+  const returns = useMemo(() => detectReturns(items, txns, dismissedMap), [items, txns, dismissedMap]);
   const groups = useMemo(() => groupReturns(returns), [returns]);
 
   // Issued-return history + which box QRs are already on a return note.
@@ -38,6 +48,31 @@ export function ReturnsView({ items, txns }: { items: InventoryItem[]; txns: Tra
   const [doc, setDoc] = useState<DocState | null>(null);
   const [registering, setRegistering] = useState(false);
   const [regError, setRegError] = useState<string | null>(null);
+
+  const [dismissing, setDismissing] = useState(false);
+  async function dismiss(boxes: ReturnedBox[]) {
+    if (!boxes.length) return;
+    const reason = window.prompt(
+      `Mark ${boxes.length} box(es) as NOT a return? They drop off this list. Nothing on the box or the log changes, and a genuine later return brings it back. Reason (optional):`,
+      "not a return — cancelled pick",
+    );
+    if (reason === null) return;   // cancelled the prompt
+    let by = "dashboard";
+    try { by = localStorage.getItem("nairn_editor") || "dashboard"; } catch { /* ignore */ }
+    setDismissing(true); setRegError(null);
+    try {
+      await api.dismissReturn(boxes.map((b) => ({ qr: b.item.qr, return_ts: b.returnedAt || "" })), by, reason);
+      setSel((s) => { const n = new Set(s); boxes.forEach((b) => n.delete(b.item.qr)); return n; });
+      loadDismissals();
+    } catch (e) { setRegError(e instanceof Error ? e.message : String(e)); }
+    finally { setDismissing(false); }
+  }
+  async function undismiss(qrs: string[]) {
+    setDismissing(true); setRegError(null);
+    try { await api.undismissReturn(qrs); loadDismissals(); }
+    catch (e) { setRegError(e instanceof Error ? e.message : String(e)); }
+    finally { setDismissing(false); }
+  }
 
   const selectedReturns = useMemo(() => returns.filter((r) => sel.has(r.item.qr)), [returns, sel]);
   const bol = useMemo(() => buildReturn(selectedReturns), [selectedReturns]);
@@ -162,11 +197,19 @@ export function ReturnsView({ items, txns }: { items: InventoryItem[]; txns: Tra
             <div className="max-h-[26rem] space-y-3 overflow-auto">
               {groups.map((g) => (
                 <div key={`${g.day}|${g.customer}|${g.po}`} className="rounded-xl border border-border">
-                  <label className="flex cursor-pointer items-center gap-2 border-b border-border bg-bg px-3 py-2 text-sm font-semibold text-fg">
-                    <input type="checkbox" checked={g.boxes.every((b) => sel.has(b.item.qr))} onChange={() => toggleMany(g.boxes)} />
-                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">{fmtDate(g.returnedAt || "")}</span>
-                    {g.customer} <span className="font-normal text-muted">· PO {g.po} · {g.boxes.length} box(es) · {fmtNum(g.boxes.reduce((s, b) => s + b.item.original_quantity, 0))} u · returned {fmtTime(g.returnedAt)}</span>
-                  </label>
+                  <div className="flex items-center gap-2 border-b border-border bg-bg px-3 py-2 text-sm font-semibold text-fg">
+                    <label className="flex flex-1 cursor-pointer items-center gap-2">
+                      <input type="checkbox" checked={g.boxes.every((b) => sel.has(b.item.qr))} onChange={() => toggleMany(g.boxes)} />
+                      <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">{fmtDate(g.returnedAt || "")}</span>
+                      {g.customer} <span className="font-normal text-muted">· PO {g.po} · {g.boxes.length} box(es) · {fmtNum(g.boxes.reduce((s, b) => s + b.item.original_quantity, 0))} u · returned {fmtTime(g.returnedAt)}</span>
+                    </label>
+                    {api.returnEnabled && (
+                      <button onClick={() => dismiss(g.boxes)} disabled={dismissing} title="Mark this whole group as not a return"
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-0.5 text-xs font-normal text-muted hover:border-danger hover:text-danger disabled:opacity-50">
+                        <Ban size={12} /> Not a return
+                      </button>
+                    )}
+                  </div>
                   <div className="divide-y divide-border">
                     {g.boxes.map((b) => {
                       const used = usedQr.get(b.item.qr);
@@ -179,6 +222,11 @@ export function ReturnsView({ items, txns }: { items: InventoryItem[]; txns: Tra
                           <span className="w-24 shrink-0 text-right text-xs text-muted" title="Returned">{fmtTime(b.returnedAt)}</span>
                           <span className="w-16 shrink-0 text-right tabular-nums text-muted">{fmtNum(b.item.original_quantity)} u</span>
                           <span className="hidden w-28 shrink-0 truncate text-right text-xs text-muted sm:inline">{b.item.qr}</span>
+                          {api.returnEnabled && (
+                            <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismiss([b]); }} disabled={dismissing}
+                              title="Not a return — remove this box from the list"
+                              className="shrink-0 rounded p-0.5 text-muted hover:text-danger disabled:opacity-50"><Ban size={13} /></button>
+                          )}
                         </label>
                       );
                     })}
@@ -248,6 +296,40 @@ export function ReturnsView({ items, txns }: { items: InventoryItem[]; txns: Tra
           </div>
         )}
       </CardBody></Card>
+
+      {/* Dismissed "not a return" boxes — reversible */}
+      {dismissals.length > 0 && (
+        <Card><CardBody>
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg">
+            <Ban size={15} className="text-muted" /> Marked &ldquo;not a return&rdquo; ({dismissals.length})
+          </div>
+          <div className="max-h-56 overflow-auto rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-bg text-left text-xs uppercase tracking-wide text-muted">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Box</th><th className="px-3 py-2 font-medium">Dismissed</th>
+                  <th className="px-3 py-2 font-medium">By</th><th className="px-3 py-2 font-medium">Reason</th><th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {dismissals.slice().sort((a, b) => (Date.parse(b.dismissed_at || "") || 0) - (Date.parse(a.dismissed_at || "") || 0)).map((d) => (
+                  <tr key={d.qr + d.dismissed_at} className="border-t border-border hover:bg-bg/60">
+                    <td className="px-3 py-2 font-mono text-xs text-fg">{d.qr}</td>
+                    <td className="px-3 py-2 text-muted">{fmtTime(d.dismissed_at)}</td>
+                    <td className="px-3 py-2 text-muted">{d.dismissed_by}</td>
+                    <td className="px-3 py-2 text-muted">{d.reason || "—"}</td>
+                    <td className="px-3 py-2 text-right">
+                      <button onClick={() => undismiss([d.qr])} disabled={dismissing}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs hover:bg-bg disabled:opacity-50"><Undo2 size={13} /> Undo</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-2 text-xs text-muted">These boxes were marked not a return, so they&apos;re hidden from the list above. A genuine later return brings a box back automatically.</div>
+        </CardBody></Card>
+      )}
 
       {doc && typeof document !== "undefined" && createPortal(
         <div className="bol-overlay">

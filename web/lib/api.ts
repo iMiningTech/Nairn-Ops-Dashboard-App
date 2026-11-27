@@ -193,6 +193,13 @@ export type IssuedReturn = {
   include_neq: boolean; classes: string; box_qrs: string; lines_json: string; reason: string; status: string;
 };
 
+// A "not a return" dismissal: a box the Returns tab detected as returned that a
+// manager marked as not a real return (e.g. a cancelled pick). Hides that return
+// from the list; a later genuine return (newer than return_ts) reappears.
+export type ReturnDismissal = {
+  qr: string; return_ts: string; dismissed_at: string; dismissed_by: string; reason: string; active: boolean;
+};
+
 // One month-end inventory snapshot, from the Inventory_Snapshots manifest. An
 // append-only, hash-chained audit record; the frozen per-box detail lives in the
 // Detail_Tab (downloaded via api.snapshotCsv).
@@ -532,6 +539,13 @@ function mapIssuedReturn(r: Record<string, string>): IssuedReturn {
   };
 }
 
+function mapDismissal(r: Record<string, string>): ReturnDismissal {
+  return {
+    qr: r["QR"] ?? "", return_ts: r["Return_Ts"] ?? "", dismissed_at: r["Dismissed_At"] ?? "",
+    dismissed_by: r["Dismissed_By"] ?? "", reason: r["Reason"] ?? "", active: /true/i.test(r["Active"] ?? ""),
+  };
+}
+
 function mapSnapshot(r: Record<string, string>): Snapshot {
   return {
     snapshot_id: r["Snapshot_ID"] ?? "", period: r["Period"] ?? "", captured_at: r["Captured_At"] ?? "",
@@ -821,6 +835,28 @@ export const api = {
       if (MODE === "gviz") return { items: (await gvizTab("Return_Register")).map(mapIssuedReturn).filter((b) => b.rtn_no) };
       return await getJson<{ items: IssuedReturn[] }>("returns");
     } catch { return { items: [] }; }
+  },
+
+  // ── "Not a return" dismissals (write-back) — same /exec endpoint ───────────
+  async returnDismissals(): Promise<{ items: ReturnDismissal[] }> {
+    try {
+      if (MODE === "gviz") return { items: (await gvizTab("Return_Dismissals")).map(mapDismissal).filter((d) => d.qr && d.active) };
+      return await getJson<{ items: ReturnDismissal[] }>("returnDismissals");
+    } catch { return { items: [] }; }
+  },
+  async dismissReturn(items: { qr: string; return_ts: string }[], by: string, reason: string): Promise<{ dismissed: number }> {
+    if (!BOL_API) throw new Error("Not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "dismissReturn", items, by, reason }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  },
+  async undismissReturn(qrs: string[]): Promise<{ undismissed: number }> {
+    if (!BOL_API) throw new Error("Not configured (set NEXT_PUBLIC_BOL_API).");
+    const res = await fetch(BOL_API, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "undismissReturn", qrs }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    return j;
   },
 
   // ── Month-end inventory snapshots (audit record, write-back) ───────────────
